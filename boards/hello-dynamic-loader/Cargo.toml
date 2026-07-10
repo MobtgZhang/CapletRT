@@ -1,0 +1,20 @@
+[package]
+name = "hello-dynamic-loader"
+description = "M3 dynamic-loader demo: load a .capp module at boot (host target)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-cap = { path = "../../crates/caplet-cap" }
+caplet-loader = { path = "../../crates/caplet-loader" }
+caplet-log = { path = "../../crates/caplet-log" }
+
+[[bin]]
+name = "hello-dynamic-loader"
+path = "src/main.rs"
+
+[profile.dev]
+opt-level = 0
+debug = true

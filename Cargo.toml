@@ -1,0 +1,112 @@
+[workspace]
+resolver = "2"
+# The cortex-m port, cortex-a port, and the hello boards are
+# intentionally excluded from the default workspace build because they
+# target embedded architectures (thumbv6m / thumbv7em / aarch32). They
+# are built and tested via the per-target scripts under
+# `tests/qemu-*/run.sh` and explicit `cargo build -p <board>` invocations.
+#
+# The hello-qemu-cm3 board is also explicitly excluded because
+# Rust's `compare_exchange` requires the `atomics` target feature that
+# is not enabled for `thumbv6m` by default. Tracking item: enable a
+# critical-section-based `SpinLock` for CM3 in Phase 3.1.
+default-members = [
+    "crates/caplet-macros",
+    "crates/caplet-macros-exports",
+    "crates/caplet-cap",
+    "crates/caplet-task",
+    "crates/caplet-async",
+    "crates/caplet-sync",
+    "crates/caplet-kernel",
+    "crates/caplet-hal",
+    "crates/caplet-hal-stm32f4",
+    "crates/caplet-hal-nrf52",
+    "crates/caplet-hal-gd32",
+    "crates/caplet-log",
+    "crates/caplet-security",
+    "crates/caplet-budget",
+    "crates/caplet-timer",
+    "crates/caplet-fs",
+    "crates/caplet-net",
+    "crates/caplet-mqttsn",
+    "crates/caplet-sensors",
+    "crates/caplet-bench-harness",
+    "crates/caplet-loader",
+]
+members = [
+    "crates/caplet-macros",
+    "crates/caplet-macros-exports",
+    "crates/caplet-cap",
+    "crates/caplet-task",
+    "crates/caplet-async",
+    "crates/caplet-sync",
+    "crates/caplet-kernel",
+    "crates/caplet-hal",
+    "crates/caplet-hal-stm32f4",
+    "crates/caplet-hal-nrf52",
+    "crates/caplet-hal-gd32",
+    "crates/caplet-log",
+    "crates/caplet-security",
+    "crates/caplet-budget",
+    "crates/caplet-timer",
+    "crates/caplet-fs",
+    "crates/caplet-net",
+    "crates/caplet-mqttsn",
+    "crates/caplet-sensors",
+    "crates/caplet-bench-harness",
+    "crates/caplet-loader",
+    "crates/caplet-ota",
+    "tools/tickless_verify",
+    "ports/cortex-m",
+    "ports/cortex-a",
+    "ports/riscv",
+    "boards/hello-qemu-cm4",
+    "boards/hello-qemu-cm4-fs",
+    "boards/hello-dynamic-loader",
+    "boards/nucleo-f446ze",
+    "boards/industrial-demo",
+    "boards/hello-riscv",
+    "boards/energy-meter",
+    "boards/medical-device",
+    "boards/automotive",
+]   # excluded from default-members: boards/hello-qemu-cm3 (CM3 atomics).
+    # boards are built per-target via `tests/qemu-*/run.sh` and explicit
+    # `cargo build -p <board> --target thumbv7em-none-eabihf`. The
+    # boards also define a host-target stub in `src/main.rs` so that
+    # `cargo build --workspace` (which compiles for the host triple)
+    # does not fail on missing `#[panic_handler]` / `Reset` symbol.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Zhang Geng <zhang.geng@example.com>"]
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+cortex-m-semihosting = "0.5"
+embedded-hal = "0.2"
+embedded-io = "0.6"
+futures = { version = "0.3", default-features = false }
+hashbrown = "0.14"
+heapless = "0.8"
+libm = "0.2"
+lock_api = "0.4"
+paste = "1.0"
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
+toml = "0.8"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = false

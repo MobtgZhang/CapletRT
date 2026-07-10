@@ -1,0 +1,10 @@
+[package]
+name = "caplet-mqttsn"
+description = "MQTT-SN v1.2 client for CapletRT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-net = { path = "../caplet-net" }

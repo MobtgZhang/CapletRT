@@ -1,0 +1,11 @@
+[package]
+name = "caplet-hal-gd32"
+description = "GD32 HAL placeholder (GigaDevice Cortex-M3/M4) for CapletRT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-hal = { path = "../caplet-hal" }
+caplet-hal-stm32f4 = { path = "../caplet-hal-stm32f4" }

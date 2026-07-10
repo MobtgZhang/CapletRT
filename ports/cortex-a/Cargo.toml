@@ -1,0 +1,25 @@
+[package]
+name = "caplet-cortex-a"
+description = "Cortex-A architecture port for CapletRT (M3 — QEMU vexpress-a9 SMP)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+cortex-m.workspace = true
+cortex-m-rt.workspace = true
+cortex-m-semihosting.workspace = true
+caplet-kernel = { path = "../../crates/caplet-kernel" }
+caplet-hal = { path = "../../crates/caplet-hal" }
+caplet-log = { path = "../../crates/caplet-log" }
+caplet-sync = { path = "../../crates/caplet-sync" }
+
+[features]
+default = ["cortex_a9"]
+cortex_a9 = []
+cortex_a53 = []
+
+[profile.dev]
+opt-level = 0
+debug = true

@@ -1,0 +1,19 @@
+[package]
+name = "caplet-ota"
+description = "OTA update manager and secure boot for CapletRT (M4 milestone)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-security = { path = "../caplet-security" }
+caplet-cap = { path = "../caplet-cap" }
+caplet-sync = { path = "../caplet-sync" }
+caplet-loader = { path = "../caplet-loader", optional = true }
+
+[features]
+default = []
+# Enable Ed25519 + SHA-512 signature verification.
+# Requires caplet-loader with the `crypto` feature enabled.
+crypto = ["caplet-loader/crypto"]

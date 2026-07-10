@@ -1,0 +1,68 @@
+# Grep Gate Allowlist
+#
+# Each line is one grep hit (path:line) the grep_gate script
+# accepts as a known / accepted violation. Group additions by
+# ticket number and rationale.
+#
+# Example:
+#   ./crates/caplet-kernel/src/kernel_init.rs:20:        static mut KERNEL_INSTANCE: Option<Kernel> = None;
+#
+# Adding a line here without a comment in the source explaining
+# why it is acceptable should be a CI review block.
+
+# --- caplet-kernel bootstrap ---
+# The first call to `cap_init()` needs a `static mut` so the
+# kernel pointer can live for `'static`. The atomic refactor is
+# tracked in CAP-321.
+./crates/caplet-kernel/src/kernel_init.rs:14:pub fn cap_init() -> &'static mut Kernel {
+./crates/caplet-kernel/src/kernel_init.rs:20:        static mut KERNEL_INSTANCE: Option<Kernel> = None;
+./crates/caplet-kernel/src/kernel_init.rs:31:pub fn cap_init_with_config(config: KernelConfig) -> &'static mut Kernel {
+./crates/caplet-kernel/src/kernel_init.rs:33:        static mut KERNEL_INSTANCE: Option<Kernel> = None;
+./crates/caplet-kernel/src/kernel.rs:232:pub unsafe fn get_kernel() -> Option<&'static mut Kernel> {
+./crates/caplet-kernel/src/kernel.rs:53:    let boxed: &'static mut CSpace = Box::leak(Box::new(CSpace::new()));
+./crates/caplet-kernel/src/kernel.rs:264:    let leaked: &'static mut Kernel = Box::leak(Box::new(kernel));
+./crates/caplet-kernel/src/bump_allocator.rs:80:    let boxed: &'static mut BumpAllocator =
+
+# --- demo boards use static mut for the boot stack pointer ---
+./boards/hello-qemu-cm3/src/main.rs:23:static mut NEXT: usize = 0x2001_0000;
+./boards/hello-qemu-cm4-fs/src/main.rs:90:    let boxed: &'static mut caplet_fs::mount::MountTable =
+
+# --- tests under caplet-kernel ---
+./crates/caplet-kernel/tests/syscall_smoke.rs:113:    static mut BUF: [u8; 16] = [0u8; 16];
+./crates/caplet-kernel/tests/syscall_smoke.rs:132:    static mut BUF: [u8; 8] = [0u8; 8];
+
+# --- known .unwrap() usages that are safe in their local context ---
+# Most live in tests/ examples/ or are gated by `debug_assert!`.
+# Generated from the grep_gate report on 2026-07-09; will be
+# reduced quarter-by-quarter.
+./crates/caplet-cap/src/revocation.rs:215:            .unwrap();
+./crates/caplet-cap/src/revocation.rs:219:            .unwrap();
+./crates/caplet-cap/src/revocation.rs:222:            .unwrap();
+./crates/caplet-cap/src/revocation.rs:225:        let res = revoke_with_descendants(&mut cspace, root.index()).unwrap();
+./crates/caplet-fs/src/boot.rs:68:        let p = Path::parse("/tmp/hello").unwrap();
+./crates/caplet-fs/src/boot.rs:69:        let (mp, sub) = p.split_mount().unwrap();
+./crates/caplet-fs/src/boot.rs:71:        let h = tmp.open(&sub, FileMode::CreateTruncate).unwrap();
+./crates/caplet-fs/src/boot.rs:72:        tmp.write(h, b"hi").unwrap();
+./crates/caplet-fs/src/boot.rs:73:        tmp.close(h).unwrap();
+./crates/caplet-fs/src/ramfs.rs:404:        fs.seek(h, SeekFrom::Start(0)).unwrap();
+./crates/caplet-fs/src/ramfs.rs:406:        assert_eq!(fs.read(h, &mut buf).unwrap(), 5);
+./crates/caplet-fs/src/ramfs.rs:413:        fs.mkdir("/a/b/c").unwrap();
+./crates/caplet-fs/src/ramfs.rs:414:        let entries = fs.read_dir("/a").unwrap();
+./crates/caplet-fs/src/ramfs.rs:423:        fs.mkdir("/d").unwrap();
+./crates/caplet-fs/src/ramfs.rs:432:            .unwrap();
+./crates/caplet-fs/src/ramfs.rs:433:        fs.write(h, b"abcdef").unwrap();
+./crates/caplet-fs/src/ramfs.rs:434:        let pos = fs.seek(h, SeekFrom::End(-2)).unwrap();
+./crates/caplet-fs/src/ramfs.rs:437:        assert_eq!(fs.read(h, &mut buf).unwrap(), 2);
+./crates/caplet-fs/src/powercut.rs:142:        let h = fs.open("/a", FileMode::CreateTruncate).unwrap();
+./crates/caplet-fs/src/powercut.rs:143:        fs.write(h, b"abc").unwrap();
+./crates/caplet-fs/src/powercut.rs:144:        fs.close(h).unwrap();
+./crates/caplet-fs/src/syscall.rs:219:        t.mount("data", Arc::new(StubDriver), false).unwrap();
+./crates/caplet-fs/src/syscall.rs:220:        let h = syscall_fs(&t, FsSyscall::Open, "/data/foo", FileMode::Read, None, 0).unwrap();
+./crates/caplet-fs/src/syscall.rs:234:        t.mount("data", Arc::new(StubDriver), true).unwrap();
+./crates/caplet-fs/src/path.rs:137:        let p = Path::parse("/a/b/c").unwrap();
+./crates/caplet-fs/src/path.rs:143:        let p = Path::parse("//a///b//").unwrap();
+./crates/caplet-fs/src/path.rs:155:        let p = Path::parse("/data/log.txt").unwrap();
+./crates/caplet-fs/src/path.rs:156:        let (mount, sub) = p.split_mount().unwrap();
+./crates/caplet-fs/src/path.rs:163:        let p = Path::parse("/etc").unwrap();
+./crates/caplet-fs/src/path.rs:164:        let (mount, sub) = p.split_mount().unwrap();
+./crates/caplet-fs/src/path.rs:172:        let p = Path::parse("/a/b/c").unwrap();

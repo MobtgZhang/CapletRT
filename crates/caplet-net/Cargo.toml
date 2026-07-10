@@ -1,0 +1,19 @@
+[package]
+name = "caplet-net"
+description = "Network stack for CapletRT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-cap = { path = "../caplet-cap" }
+caplet-sync = { path = "../caplet-sync" }
+caplet-hal = { path = "../caplet-hal" }
+
+[dev-dependencies]
+caplet-bench-harness = { path = "../caplet-bench-harness" }
+
+[[bench]]
+name = "ipc_send_bench"
+harness = false

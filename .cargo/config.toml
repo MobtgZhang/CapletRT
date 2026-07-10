@@ -1,0 +1,28 @@
+# CapletRT Cargo Configuration
+#
+# This configures the runners for different embedded targets.
+# With this config, `cargo run` will automatically start QEMU.
+
+[target.thumbv7em-none-eabihf]
+# Cortex-M4 (MPS2-AN500 board in QEMU)
+runner = "qemu-system-arm -machine mps2-an500 -cpu cortex-m4 -nographic -semihosting-config enable=on,target=native -kernel"
+
+[target.thumbv6m-none-eabi]
+# Cortex-M3/M0+ (MPS2-AN385 board in QEMU)
+runner = "qemu-system-arm -machine mps2-an385 -cpu cortex-m3 -nographic -semihosting-config enable=on,target=native -kernel"
+
+[target.thumbv7em-none-eabi]
+# Cortex-M4 without FPU
+runner = "qemu-system-arm -machine mps2-an500 -cpu cortex-m4 -nographic -semihosting-config enable=on,target=native -kernel"
+
+[target.riscv32i-unknown-none-elf]
+# RISC-V 32-bit (QEMU virt machine)
+runner = "qemu-system-riscv32 -machine virt -nographic -kernel"
+
+[target.riscv64gc-unknown-none-elf]
+# RISC-V 64-bit (QEMU virt machine)
+runner = "qemu-system-riscv64 -machine virt -nographic -kernel"
+
+[target.aarch64-unknown-none]
+# ARM64 (QEMU virt machine)
+runner = "qemu-system-aarch64 -machine virt -cpu cortex-a53 -nographic -kernel"

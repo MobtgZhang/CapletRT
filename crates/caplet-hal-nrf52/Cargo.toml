@@ -1,0 +1,11 @@
+[package]
+name = "caplet-hal-nrf52"
+description = "nRF52 HAL implementation for CapletRT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-hal = { path = "../caplet-hal" }
+cortex-m = "0.7"

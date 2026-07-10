@@ -1,0 +1,27 @@
+[package]
+name = "caplet-loader"
+description = "Dynamic module loader for CapletRT (M3 — ELF subset + .capp + signature verification)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-bench-harness = { path = "../caplet-bench-harness" }
+caplet-cap = { path = "../caplet-cap" }
+caplet-kernel = { path = "../caplet-kernel" }
+caplet-sync = { path = "../caplet-sync" }
+
+[features]
+default = []
+# Enable Ed25519 + SHA-512 signature verification for .capp modules.
+# The implementation is pure-Rust (no external crypto crate dependency).
+# NOT cryptographically reviewed — do NOT use in production without audit.
+crypto = []
+
+[lib]
+path = "src/lib.rs"
+
+[[bench]]
+name = "loader_throughput"
+harness = false

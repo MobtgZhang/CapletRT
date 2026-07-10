@@ -1,0 +1,10 @@
+[package]
+name = "caplet-budget"
+description = "Per-task resource budgets (memory / CPU / message) for CapletRT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-sync = { path = "../caplet-sync" }

@@ -1,0 +1,30 @@
+[package]
+name = "caplet-kernel"
+description = "CapletRT kernel core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-cap = { path = "../caplet-cap" }
+caplet-task = { path = "../caplet-task" }
+caplet-async = { path = "../caplet-async" }
+caplet-sync = { path = "../caplet-sync" }
+caplet-budget = { path = "../caplet-budget" }
+hashbrown.workspace = true
+linked_list_allocator = "0.10"
+
+[features]
+default = []
+# Enable pure-software AES-128 and SHA-256 implementations for testing
+# and platforms without hardware crypto. NOT cryptographically reviewed —
+# do NOT use in production without audit.
+soft-crypto = []
+
+[dev-dependencies]
+caplet-bench-harness = { path = "../caplet-bench-harness" }
+
+[[bench]]
+name = "context_switch_bench"
+harness = false

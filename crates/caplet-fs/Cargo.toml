@@ -1,0 +1,11 @@
+[package]
+name = "caplet-fs"
+description = "VFS + filesystem backends for CapletRT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-cap = { path = "../caplet-cap" }
+caplet-sync = { path = "../caplet-sync" }

@@ -1,0 +1,12 @@
+[package]
+name = "caplet-ui-demo"
+description = "CapletRT UI Demo - Button and Progress Bar widgets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# This is a std crate for demonstration
+# For embedded use, remove `std` feature and add appropriate panic handler
+[dependencies]
+

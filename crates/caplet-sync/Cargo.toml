@@ -1,0 +1,10 @@
+[package]
+name = "caplet-sync"
+description = "Synchronization primitives for CapletRT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lock_api.workspace = true

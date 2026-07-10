@@ -1,0 +1,10 @@
+[package]
+name = "caplet-sensors"
+description = "Sensor traits and concrete drivers for CapletRT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-hal = { path = "../caplet-hal" }

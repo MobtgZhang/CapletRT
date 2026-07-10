@@ -1,0 +1,16 @@
+[package]
+name = "caplet-security"
+description = "Capability wrappers for security-critical peripherals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-hal = { path = "../caplet-hal" }
+caplet-cap = { path = "../caplet-cap" }
+caplet-sync = { path = "../caplet-sync" }
+
+[features]
+default = []
+hw-crypto = []

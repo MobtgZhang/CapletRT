@@ -1,0 +1,35 @@
+[package]
+name = "hello-qemu-cm4-fs"
+description = "CapletRT VFS smoke test on QEMU Cortex-M4"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-cortex-m = { path = "../../ports/cortex-m", features = ["cortex_m4"] }
+caplet-kernel = { path = "../../crates/caplet-kernel" }
+caplet-log = { path = "../../crates/caplet-log", features = ["semihosting"] }
+caplet-macros = { path = "../../crates/caplet-macros" }
+caplet-macros-exports = { path = "../../crates/caplet-macros-exports" }
+caplet-async = { path = "../../crates/caplet-async" }
+caplet-sync = { path = "../../crates/caplet-sync" }
+caplet-fs = { path = "../../crates/caplet-fs" }
+cortex-m-rt = { workspace = true }
+cortex-m-semihosting = { workspace = true }
+
+[[bin]]
+name = "hello-qemu-cm4-fs"
+path = "src/main.rs"
+required-features = ["target-none"]
+
+[features]
+default = []
+# See hello-qemu-cm4 for the rationale: gates the embedded `[[bin]]`
+# out of the host `cargo test --workspace` flow.
+target-none = []
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1

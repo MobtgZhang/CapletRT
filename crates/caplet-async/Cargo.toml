@@ -1,0 +1,12 @@
+[package]
+name = "caplet-async"
+description = "Stackless async executor for CapletRT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-task = { path = "../caplet-task" }
+caplet-sync = { path = "../caplet-sync" }
+futures.workspace = true

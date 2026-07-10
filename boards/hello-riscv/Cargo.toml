@@ -1,0 +1,30 @@
+[package]
+name = "hello-riscv"
+description = "Minimal hello-world for RISC-V (QEMU virt)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-riscv = { path = "../../ports/riscv" }
+caplet-kernel = { path = "../../crates/caplet-kernel" }
+caplet-macros-exports = { path = "../../crates/caplet-macros-exports" }
+caplet-log = { path = "../../crates/caplet-log" }
+caplet-hal = { path = "../../crates/caplet-hal" }
+
+[features]
+default = []
+rv32imac = ["caplet-riscv/rv32imac"]
+rv64gc = ["caplet-riscv/rv64gc"]
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

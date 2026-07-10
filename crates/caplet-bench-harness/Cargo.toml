@@ -1,0 +1,8 @@
+[package]
+name = "caplet-bench-harness"
+version = "0.1.0"
+edition = "2021"
+description = "Std-only micro-bench harness used by the M2 perf gate"
+
+[lib]
+path = "src/lib.rs"

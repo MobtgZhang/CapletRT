@@ -1,0 +1,21 @@
+[package]
+name = "caplet-cap"
+description = "Capability primitives for CapletRT"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+hashbrown.workspace = true
+
+[dev-dependencies]
+caplet-bench-harness = { path = "../caplet-bench-harness" }
+
+[features]
+default = []
+const_generics = []
+
+[[bench]]
+name = "cap_derive_bench"
+harness = false

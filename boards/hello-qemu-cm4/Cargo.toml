@@ -1,0 +1,37 @@
+[package]
+name = "hello-qemu-cm4"
+description = "Hello World for QEMU Cortex-M4"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-cortex-m = { path = "../../ports/cortex-m", features = ["cortex_m4"] }
+caplet-kernel = { path = "../../crates/caplet-kernel" }
+caplet-log = { path = "../../crates/caplet-log", features = ["semihosting"] }
+caplet-macros = { path = "../../crates/caplet-macros" }
+caplet-macros-exports = { path = "../../crates/caplet-macros-exports" }
+caplet-async = { path = "../../crates/caplet-async" }
+caplet-sync = { path = "../../crates/caplet-sync" }
+cortex-m-rt = { workspace = true }
+cortex-m-semihosting = { workspace = true }
+
+[[bin]]
+name = "hello-qemu-cm4"
+path = "src/main.rs"
+required-features = ["target-none"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+
+# Tell cargo to run our build script before invoking rustc.
+[features]
+default = ["target-none"]
+# The `target-none` feature is enabled by `tests/qemu-*/run.sh` when
+# building for an embedded target. With it disabled, the `[[bin]]`
+# is skipped so `cargo test --workspace` (host triple) does not try
+# to link cortex-m-rt's `Reset` symbol on x86_64.
+target-none = []

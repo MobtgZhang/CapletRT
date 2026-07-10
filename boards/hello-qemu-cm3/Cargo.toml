@@ -1,0 +1,21 @@
+[package]
+name = "hello-qemu-cm3"
+description = "Hello World for QEMU Cortex-M3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-cortex-m = { path = "../../ports/cortex-m", features = ["cortex_m3"] }
+caplet-log = { path = "../../crates/caplet-log", features = ["semihosting"] }
+cortex-m-semihosting = { workspace = true }
+
+[[bin]]
+name = "hello-qemu-cm3"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
