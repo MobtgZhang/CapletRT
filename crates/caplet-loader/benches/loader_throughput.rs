@@ -8,9 +8,7 @@
 //! directly on a hosted runner.
 
 use caplet_bench_harness::{report, time};
-use caplet_loader::capp::{
-    FLAG_SIGNED, HEADER_SIZE, MAGIC, SIGNATURE_SIZE, SUPPORTED_VERSION,
-};
+use caplet_loader::capp::{HEADER_SIZE, MAGIC, SIGNATURE_SIZE, SUPPORTED_VERSION};
 use caplet_loader::parse_capp;
 
 /// Build a tiny CAPP byte stream. Same layout as

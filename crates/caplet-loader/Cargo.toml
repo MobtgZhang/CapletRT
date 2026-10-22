@@ -7,17 +7,20 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-caplet-bench-harness = { path = "../caplet-bench-harness" }
 caplet-cap = { path = "../caplet-cap" }
-caplet-kernel = { path = "../caplet-kernel" }
 caplet-sync = { path = "../caplet-sync" }
+caplet-crypto = { path = "../caplet-crypto" }
 
 [features]
-default = []
-# Enable Ed25519 + SHA-512 signature verification for .capp modules.
-# The implementation is pure-Rust (no external crypto crate dependency).
-# NOT cryptographically reviewed — do NOT use in production without audit.
+default = ["crypto"]
+# Enable real Ed25519 signature verification for .capp modules.
 crypto = []
+# Enable the bounded in-memory audit ring in `metrics.rs`.
+metrics_ring = []
+
+[dev-dependencies]
+caplet-bench-harness = { path = "../caplet-bench-harness" }
+ed25519-dalek.workspace = true
 
 [lib]
 path = "src/lib.rs"

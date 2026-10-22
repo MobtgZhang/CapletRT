@@ -11,7 +11,7 @@
 //!   stack_size (4B)
 //!   priority (1B)
 //!   flags (1B)
-//!   _pad (2B)
+//!   public_key_id (2B, zero-extended)
 //!   text_off (4B)
 //!   text_size (4B)
 //!   data_off (4B)
@@ -30,13 +30,13 @@
 //!   name:   UTF-8 module name, null-padded to 4-byte boundary
 //! ```
 //!
-//! The header is exactly 80 bytes long. This is verified at parse
+//! The header is exactly 120 bytes long. This is verified at parse
 //! time so a malformed container is rejected.
 
 extern crate alloc;
 #[cfg(test)]
 extern crate std;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::manifest::{CapDescriptor, ModuleFormat, ModuleManifest};
@@ -54,7 +54,7 @@ use crate::manifest::{CapDescriptor, ModuleFormat, ModuleManifest};
 /// 12..16   stack_size
 /// 16       priority
 /// 17       flags
-/// 18..20   _pad
+/// 18..20   public_key_id (u16, zero-extended)
 /// 20..24   text_off
 /// 24..28   text_size
 /// 28..32   data_off
@@ -72,7 +72,7 @@ pub const HEADER_SIZE: usize = 120;
 pub const SIGNATURE_SIZE: usize = 64;
 
 /// Magic bytes.
-pub const MAGIC: [u8; 4] = [b'C', b'A', b'P', b'P'];
+pub const MAGIC: [u8; 4] = *b"CAPP";
 
 /// Container version supported by this parser.
 pub const SUPPORTED_VERSION: u16 = 1;
@@ -116,25 +116,13 @@ pub enum CappError {
 
 /// Parse the given bytes as a `.capp` container.
 pub fn parse_capp(bytes: &[u8]) -> Result<ParsedCapp, CappError> {
-    if bytes.len() < HEADER_SIZE {
-        return Err(CappError::TooShort);
-    }
-    if bytes[..4] != MAGIC {
-        return Err(CappError::BadMagic);
-    }
-    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-    if version != SUPPORTED_VERSION {
-        return Err(CappError::UnsupportedVersion);
-    }
-    let hdr_size = u16::from_le_bytes([bytes[6], bytes[7]]);
-    if hdr_size as usize != HEADER_SIZE {
-        return Err(CappError::BadHeaderSize);
-    }
+    validate_capp_header(bytes)?;
+
     let entry_point = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
     let stack_size = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
     let priority = bytes[16];
     let flags = bytes[17];
-    let _pad = u16::from_le_bytes([bytes[18], bytes[19]]);
+    let public_key_id = u16::from_le_bytes([bytes[18], bytes[19]]) as u32;
     let text_off = u32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]) as usize;
     let text_size = u32::from_le_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]) as usize;
     let data_off = u32::from_le_bytes([bytes[28], bytes[29], bytes[30], bytes[31]]) as usize;
@@ -153,27 +141,31 @@ pub fn parse_capp(bytes: &[u8]) -> Result<ParsedCapp, CappError> {
     manifest.priority = priority;
     manifest.text_size = text_size as u32;
     manifest.data_size = data_size as u32;
+    manifest.public_key_id = public_key_id;
+    manifest.signed = (flags & FLAG_SIGNED) != 0;
+    manifest.relocatable = (flags & FLAG_RELOCATABLE) != 0;
     manifest.signature = signature;
-    if (flags & FLAG_SIGNED) != 0 && manifest.public_key_id == 0 {
+    if manifest.signed && manifest.public_key_id == 0 {
         return Err(CappError::MissingKeyId);
     }
 
     // Name section.
-    #[cfg(test)]
-    std::eprintln!("name_off={} bytes_len={} bytes_after_name_off={:?}", name_off, bytes.len(), &bytes[name_off..bytes.len().min(name_off + 16)]);
-    if name_off < bytes.len() {
+    if name_off >= bytes.len() {
+        return Err(CappError::SectionOutOfRange);
+    }
+    {
         let end = find_null_or_end(&bytes[name_off..]);
-        let name_str = match core::str::from_utf8(&bytes[name_off..name_off + end]) {
-            Ok(s) => s,
-            Err(_) => "<non-utf8>",
-        };
-        #[cfg(test)]
-        std::eprintln!("name bytes={:?}", &bytes[name_off..name_off + end]);
+        let name_str =
+            core::str::from_utf8(&bytes[name_off..name_off + end]).unwrap_or("<non-utf8>");
         manifest.set_name(name_str);
     }
 
     // Cap manifest.
-    if cap_off.checked_add(cap_count * 32).map(|e| e > bytes.len()).unwrap_or(true) {
+    if cap_off
+        .checked_add(cap_count * 32)
+        .map(|e| e > bytes.len())
+        .unwrap_or(true)
+    {
         return Err(CappError::SectionOutOfRange);
     }
     for i in 0..cap_count {
@@ -184,11 +176,7 @@ pub fn parse_capp(bytes: &[u8]) -> Result<ParsedCapp, CappError> {
         let mut tag_bytes = [0u8; 28];
         tag_bytes.copy_from_slice(&bytes[off..off + 28]);
         let tag_str = match core::str::from_utf8(&tag_bytes) {
-            Ok(s) => s
-                .split('\0')
-                .next()
-                .unwrap_or("<bad>")
-                .to_string(),
+            Ok(s) => s.split('\0').next().unwrap_or("<bad>").to_string(),
             Err(_) => "<bad>".to_string(),
         };
         let perms = u32::from_le_bytes([
@@ -197,7 +185,9 @@ pub fn parse_capp(bytes: &[u8]) -> Result<ParsedCapp, CappError> {
             bytes[off + 30],
             bytes[off + 31],
         ]);
-        manifest.granted_caps.push(CapDescriptor::new(tag_str, perms, 0));
+        manifest
+            .granted_caps
+            .push(CapDescriptor::new(tag_str, perms, 0));
     }
     // For M3 we treat required_caps == granted_caps; a finer model
     // would let the loader grant a superset.
@@ -205,18 +195,18 @@ pub fn parse_capp(bytes: &[u8]) -> Result<ParsedCapp, CappError> {
 
     // Relocations.
     let reloc_bytes = reloc_count * 8;
-    if reloc_off.checked_add(reloc_bytes).map(|e| e > bytes.len()).unwrap_or(true) {
+    if reloc_off
+        .checked_add(reloc_bytes)
+        .map(|e| e > bytes.len())
+        .unwrap_or(true)
+    {
         return Err(CappError::SectionOutOfRange);
     }
     let mut relocs = Vec::with_capacity(reloc_count);
     for i in 0..reloc_count {
         let off = reloc_off + i * 8;
-        let vaddr = u32::from_le_bytes([
-            bytes[off],
-            bytes[off + 1],
-            bytes[off + 2],
-            bytes[off + 3],
-        ]);
+        let vaddr =
+            u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]]);
         let addend = u32::from_le_bytes([
             bytes[off + 4],
             bytes[off + 5],
@@ -227,10 +217,18 @@ pub fn parse_capp(bytes: &[u8]) -> Result<ParsedCapp, CappError> {
     }
 
     // Image = text + data.
-    if text_off.checked_add(text_size).map(|e| e > bytes.len()).unwrap_or(true) {
+    if text_off
+        .checked_add(text_size)
+        .map(|e| e > bytes.len())
+        .unwrap_or(true)
+    {
         return Err(CappError::BadSectionSize);
     }
-    if data_off.checked_add(data_size).map(|e| e > bytes.len()).unwrap_or(true) {
+    if data_off
+        .checked_add(data_size)
+        .map(|e| e > bytes.len())
+        .unwrap_or(true)
+    {
         return Err(CappError::BadSectionSize);
     }
     let mut image = Vec::with_capacity(text_size + data_size);
@@ -238,7 +236,34 @@ pub fn parse_capp(bytes: &[u8]) -> Result<ParsedCapp, CappError> {
     image.extend_from_slice(&bytes[data_off..data_off + data_size]);
     manifest.text_base = text_off as u32;
 
-    Ok(ParsedCapp { manifest, image, relocs })
+    Ok(ParsedCapp {
+        manifest,
+        image,
+        relocs,
+    })
+}
+
+/// Validate the fixed-size header gates before touching any variable-length
+/// section. This separation is also the Kani proof boundary: it contains no
+/// loops, allocation, or UTF-8 validation, so the magic/version/size gates can
+/// be checked without unwinding the rest of the parser.
+#[inline]
+pub fn validate_capp_header(bytes: &[u8]) -> Result<(), CappError> {
+    if bytes.len() < HEADER_SIZE {
+        return Err(CappError::TooShort);
+    }
+    if bytes[..4] != MAGIC {
+        return Err(CappError::BadMagic);
+    }
+    let version = u16::from_le_bytes([bytes[4], bytes[5]]);
+    if version != SUPPORTED_VERSION {
+        return Err(CappError::UnsupportedVersion);
+    }
+    let hdr_size = u16::from_le_bytes([bytes[6], bytes[7]]);
+    if hdr_size as usize != HEADER_SIZE {
+        return Err(CappError::BadHeaderSize);
+    }
+    Ok(())
 }
 
 fn find_null_or_end(bytes: &[u8]) -> usize {
@@ -260,7 +285,7 @@ mod tests {
         out.push(8); // priority
         out.push(0); // flags (no signature required for the test)
         out.extend_from_slice(&[0u8; 2]); // pad
-        // text @ HEADER_SIZE, 4 bytes
+                                          // text @ HEADER_SIZE, 4 bytes
         let text_off = HEADER_SIZE;
         out.extend_from_slice(&(text_off as u32).to_le_bytes());
         out.extend_from_slice(&4u32.to_le_bytes());

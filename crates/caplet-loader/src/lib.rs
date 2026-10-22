@@ -28,20 +28,25 @@
 
 extern crate alloc;
 
-pub mod manifest;
-pub mod elf;
-pub mod capp;
-pub mod reloc;
-pub mod verifier;
-pub mod sandbox;
 pub mod allocator;
+pub mod capp;
+pub mod elf;
+pub mod manifest;
 pub mod metrics;
+pub mod reloc;
+pub mod sandbox;
+pub mod verifier;
 
-pub use manifest::{ModuleManifest, ModuleFormat, CapDescriptor};
-pub use elf::parse_elf;
 pub use capp::parse_capp;
-pub use sandbox::{load_module, LoaderError, LoadedModule};
-pub use verifier::{verify_signature, SigningKey, SignatureError};
+pub use elf::parse_elf;
+pub use manifest::{CapDescriptor, ModuleFormat, ModuleManifest};
+pub use sandbox::{
+    load_module, load_module_with_policy, LoadedModule, LoaderError, SignaturePolicy,
+};
+pub use verifier::{
+    clear_trust_store, current_trust_store, install_trust_store, signing_message, verify_signature,
+    verify_signature_with_store, SignatureError, SigningKey, TrustStore,
+};
 
 /// Identifier of a loaded module. Distinct from a process id: a
 /// module may contain several processes, or one process may be

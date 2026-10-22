@@ -3,7 +3,7 @@
 //! `load_module` performs the full M3 load sequence:
 //!
 //! 1. Parse the container (ELF or `.capp`).
-//! 2. Verify the signature (or, in host tests, skip it).
+//! 2. Verify the signature according to the selected [`SignaturePolicy`].
 //! 3. Allocate physical memory for the image.
 //! 4. Apply relocations.
 //! 5. Copy `.text + .data` to the allocated region.
@@ -15,7 +15,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use caplet_cap::CSpace;
+use caplet_cap::{CSpace, Permissions, SafetyBits};
 
 use crate::allocator::ModulePool;
 use crate::capp;
@@ -33,12 +33,33 @@ pub enum LoaderError {
     ParseFailed,
     /// Signature verification failed.
     BadSignature,
+    /// The selected policy requires a signature, but the module is unsigned.
+    UnsignedModule,
+    /// A signature is present but no crypto backend is compiled in.
+    CryptoUnavailable,
     /// Out of memory in the module pool.
     OutOfMemory,
     /// Image too large for the pool's alignment.
     BadSize,
     /// Relocation went out of range.
     BadReloc,
+    /// Entry point is outside the loaded image (for relocatable images).
+    BadEntry,
+    /// The loader does not hold a capability the module requires.
+    MissingCapability,
+}
+
+/// Signature handling for [`load_module_with_policy`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SignaturePolicy {
+    /// Reject unsigned modules and require a working crypto backend. This is
+    /// the default for [`load_module`].
+    #[default]
+    Enforce,
+    /// Permit unsigned development modules. Signed modules are still fully
+    /// verified and a present-but-unavailable crypto backend is still an
+    /// error.
+    AllowUnsigned,
 }
 
 /// A successfully loaded module.
@@ -53,6 +74,31 @@ pub struct LoadedModule {
     pub cspace: CSpace,
     /// Image size in bytes.
     pub image_size: u32,
+    /// Entry point virtual address after relocation.
+    pub entry_vaddr: u32,
+    /// Relocated `.text + .data` bytes, ready to be copied by the board.
+    image: Vec<u8>,
+}
+
+impl LoadedModule {
+    /// Borrow the relocated module image.
+    pub fn image(&self) -> &[u8] {
+        &self.image
+    }
+
+    /// Offset of the entry point from [`LoadedModule::base_vaddr`].
+    pub fn entry_offset(&self) -> u32 {
+        self.entry_vaddr.wrapping_sub(self.base_vaddr)
+    }
+
+    /// Copy the relocated image into a caller-owned mapping.
+    pub fn copy_to(&self, dst: &mut [u8]) -> Result<(), LoaderError> {
+        if dst.len() < self.image.len() {
+            return Err(LoaderError::BadSize);
+        }
+        dst[..self.image.len()].copy_from_slice(&self.image);
+        Ok(())
+    }
 }
 
 /// Load a module from the given bytes. The module pool must be
@@ -60,7 +106,17 @@ pub struct LoadedModule {
 pub fn load_module(
     bytes: &[u8],
     pool: &mut ModulePool,
-    _loader_caps: &CSpace,
+    loader_caps: &CSpace,
+) -> Result<LoadedModule, LoaderError> {
+    load_module_with_policy(bytes, pool, loader_caps, SignaturePolicy::Enforce)
+}
+
+/// Load a module with an explicit signature policy.
+pub fn load_module_with_policy(
+    bytes: &[u8],
+    pool: &mut ModulePool,
+    loader_caps: &CSpace,
+    policy: SignaturePolicy,
 ) -> Result<LoadedModule, LoaderError> {
     if bytes.len() < 4 {
         return Err(LoaderError::BadMagic);
@@ -80,14 +136,15 @@ pub fn load_module(
         }
     };
 
-    // Signature verification. In host tests the trust store is
-    // empty, so we accept the module but record the check.
-    if !matches!(manifest.format, ModuleFormat::Elf) {
+    let must_verify = manifest.signed || policy == SignaturePolicy::Enforce;
+    if must_verify && !manifest.signed {
+        return Err(LoaderError::UnsignedModule);
+    }
+    if must_verify {
         match verifier::verify_signature(&manifest, &image) {
             Ok(()) => {}
             Err(verifier::SignatureError::Unavailable) => {
-                // Crypto backend missing; accept and continue. Real
-                // boards must wire up the backend.
+                return Err(LoaderError::CryptoUnavailable)
             }
             Err(_) => return Err(LoaderError::BadSignature),
         }
@@ -97,32 +154,84 @@ pub fn load_module(
         return Err(LoaderError::BadSignature);
     }
 
+    // A module may only require capabilities that the loader itself holds,
+    // with at least the requested permissions.  This prevents an attested
+    // module from silently acquiring authority the loader never had.
+    for required in &manifest.required_caps {
+        let index = loader_caps
+            .find_by_name(&required.tag)
+            .ok_or(LoaderError::MissingCapability)?;
+        let (perms, _) = loader_caps
+            .slot_perms_safety(index)
+            .ok_or(LoaderError::MissingCapability)?;
+        if !Permissions(required.perms).is_subset(perms) {
+            return Err(LoaderError::MissingCapability);
+        }
+    }
+
     // Allocate memory.
     let size = image.len() as u32;
-    let (vaddr, paddr) = pool.alloc(size.max(0x10000)).ok_or(LoaderError::OutOfMemory)?;
+    let (vaddr, paddr) = pool
+        .alloc(size.max(0x10000))
+        .ok_or(LoaderError::OutOfMemory)?;
 
     // Apply relocations in place.
     let mut img = image;
-    if relocs.is_empty() {
-        // Nothing to do.
-    } else {
-        reloc::apply(&mut img, &relocs, manifest.text_base, vaddr)
-            .map_err(|_| LoaderError::BadReloc)?;
+    if !relocs.is_empty() {
+        match manifest.format {
+            ModuleFormat::Capp if manifest.relocatable => {
+                reloc::apply(&mut img, &relocs, 0, vaddr).map_err(|_| LoaderError::BadReloc)?;
+            }
+            ModuleFormat::Capp => return Err(LoaderError::BadReloc),
+            ModuleFormat::Elf => {
+                reloc::apply(&mut img, &relocs, manifest.text_base, vaddr)
+                    .map_err(|_| LoaderError::BadReloc)?;
+            }
+        }
     }
 
-    // Copy the image into the pool. We do not have a direct write
-    // to physical memory from the loader crate; the caller (the
-    // board's load_module shim) is responsible for performing the
-    // copy with whatever MMU / DMA helpers it has. We just record
-    // the destination addresses.
+    let entry_vaddr = match manifest.format {
+        ModuleFormat::Capp if manifest.relocatable => {
+            if manifest.entry_point as usize >= img.len() {
+                return Err(LoaderError::BadEntry);
+            }
+            vaddr
+                .checked_add(manifest.entry_point)
+                .ok_or(LoaderError::BadEntry)?
+        }
+        ModuleFormat::Capp => manifest.entry_point,
+        ModuleFormat::Elf => {
+            if manifest.entry_point < manifest.text_base {
+                return Err(LoaderError::BadEntry);
+            }
+            vaddr
+                .checked_add(manifest.entry_point - manifest.text_base)
+                .ok_or(LoaderError::BadEntry)?
+        }
+    };
 
-    let cspace = CSpace::new();
+    // The board's load_module shim copies `image` into the physical mapping
+    // with its MMU/DMA helpers; keeping it here makes that step explicit and
+    // allows host-side tests to execute the exact relocated bytes.
+
+    let mut cspace = CSpace::new();
+    for granted in &manifest.granted_caps {
+        if let Ok(handle) = cspace.allocate(
+            Permissions(granted.perms),
+            SafetyBits::from_bits(granted.safety),
+            None,
+        ) {
+            let _ = cspace.bind_name(handle.index(), &granted.tag);
+        }
+    }
     Ok(LoadedModule {
         manifest,
         base_vaddr: vaddr,
         base_paddr: paddr,
         cspace,
         image_size: size,
+        entry_vaddr,
+        image: img,
     })
 }
 
@@ -134,7 +243,10 @@ pub fn manifest_to_string(m: &ModuleManifest) -> String {
     s.push_str(&format!("name: {}\n", m.name_str()));
     s.push_str(&format!("version: {}\n", m.version));
     s.push_str(&format!("entry: 0x{:x}\n", m.entry_point));
-    s.push_str(&format!("text: 0x{:x} ({} bytes)\n", m.text_base, m.text_size));
+    s.push_str(&format!(
+        "text: 0x{:x} ({} bytes)\n",
+        m.text_base, m.text_size
+    ));
     s.push_str(&format!("data: {} bytes\n", m.data_size));
     s.push_str(&format!("required_caps: {}\n", m.required_caps.len()));
     s.push_str(&format!("granted_caps: {}\n", m.granted_caps.len()));
@@ -143,7 +255,10 @@ pub fn manifest_to_string(m: &ModuleManifest) -> String {
 
 /// Get a summary of the granted caps as a `Vec<(tag, perms)>`.
 pub fn granted_caps_summary(m: &ModuleManifest) -> Vec<(String, u32)> {
-    m.granted_caps.iter().map(|c| (c.tag.clone(), c.perms)).collect()
+    m.granted_caps
+        .iter()
+        .map(|c| (c.tag.clone(), c.perms))
+        .collect()
 }
 
 #[cfg(test)]
@@ -155,7 +270,12 @@ mod tests {
     fn rejects_unknown_magic() {
         let bytes = [0u8; 32];
         let mut pool = ModulePool::new(0x6000_0000, 1024 * 1024);
-        let r = load_module(&bytes, &mut pool, &CSpace::new());
+        let r = load_module_with_policy(
+            &bytes,
+            &mut pool,
+            &CSpace::new(),
+            SignaturePolicy::AllowUnsigned,
+        );
         assert!(r.is_err());
     }
 
@@ -173,14 +293,19 @@ mod tests {
         elf.extend_from_slice(&1u32.to_le_bytes());
         elf.extend_from_slice(&0x1000u32.to_le_bytes());
         elf.extend_from_slice(&52u32.to_le_bytes()); // phoff = 52 (ehdr=52, 0 phdrs)
-        // Pad to 52 bytes
+                                                     // Pad to 52 bytes
         elf.resize(52, 0);
         // No program headers, no image.
         let mut pool = ModulePool::new(0x6000_0000, 1024 * 1024);
         // The minimal ELF without program headers is rejected by the
         // parser, so we expect an error here. That's intentional;
         // we only check that the loader does not panic.
-        let r = load_module(&elf, &mut pool, &CSpace::new());
+        let r = load_module_with_policy(
+            &elf,
+            &mut pool,
+            &CSpace::new(),
+            SignaturePolicy::AllowUnsigned,
+        );
         assert!(r.is_err());
     }
 
@@ -219,7 +344,13 @@ mod tests {
         out.extend_from_slice(b"m\x00\x00\x00");
 
         let mut pool = ModulePool::new(0x6000_0000, 1024 * 1024);
-        let loaded = load_module(&out, &mut pool, &CSpace::new()).unwrap();
+        let loaded = load_module_with_policy(
+            &out,
+            &mut pool,
+            &CSpace::new(),
+            SignaturePolicy::AllowUnsigned,
+        )
+        .unwrap();
         assert_eq!(loaded.manifest.entry_point, 0x2000);
         assert_eq!(loaded.manifest.text_size, 4);
         assert_eq!(loaded.image_size, 4);
@@ -259,9 +390,22 @@ mod tests {
         // name
         out.extend_from_slice(b"m\x00\x00\x00");
 
+        let mut loader_caps = CSpace::new();
+        let handle = loader_caps
+            .allocate(Permissions(0xFF), SafetyBits::default(), None)
+            .unwrap();
+        loader_caps.bind_name(handle.index(), "log").unwrap();
+
         let mut pool = ModulePool::new(0x6000_0000, 1024 * 1024);
-        let loaded = load_module(&out, &mut pool, &CSpace::new()).unwrap();
+        let loaded = load_module_with_policy(
+            &out,
+            &mut pool,
+            &loader_caps,
+            SignaturePolicy::AllowUnsigned,
+        )
+        .unwrap();
         assert_eq!(loaded.manifest.granted_caps.len(), 1);
         assert_eq!(loaded.manifest.granted_caps[0].tag, "log");
+        assert!(loaded.cspace.find_by_name("log").is_some());
     }
 }

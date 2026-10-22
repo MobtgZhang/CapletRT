@@ -21,7 +21,11 @@ pub struct ModulePool {
 impl ModulePool {
     /// Construct a pool with `base..base+size` available.
     pub const fn new(base: u32, size: u32) -> Self {
-        Self { base, size, next: 0 }
+        Self {
+            base,
+            size,
+            next: 0,
+        }
     }
 
     /// Allocate `size` bytes. Returns `(vaddr, paddr)` or `None` if
@@ -45,6 +49,15 @@ impl ModulePool {
     /// Total bytes allocated so far.
     pub fn used(&self) -> u32 {
         self.next
+    }
+
+    /// Rewind the bump pointer to a previously observed [`ModulePool::used`]
+    /// value. This is used to roll back an allocation when a later stage of
+    /// module loading fails.
+    pub fn rewind_to(&mut self, used: u32) {
+        if used <= self.size {
+            self.next = self.next.min(used);
+        }
     }
 
     /// Remaining capacity.

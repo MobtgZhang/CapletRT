@@ -150,17 +150,9 @@ pub fn parse_elf(bytes: &[u8]) -> Result<ParsedElf, ElfError> {
         return Err(ElfError::NotLittleEndian);
     }
     // Read remaining header fields (offsets match `Elf32Ehdr`).
-    let read_u16 = |off: usize| -> u16 {
-        u16::from_le_bytes([bytes[off], bytes[off + 1]])
-    };
+    let read_u16 = |off: usize| -> u16 { u16::from_le_bytes([bytes[off], bytes[off + 1]]) };
     let read_u32 = |off: usize| -> u32 {
-        u16::from_le_bytes([bytes[off], bytes[off + 1]]) as u32;
-        u32::from_le_bytes([
-            bytes[off],
-            bytes[off + 1],
-            bytes[off + 2],
-            bytes[off + 3],
-        ])
+        u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
     };
     let e_type = read_u16(16);
     let e_machine = read_u16(18);
@@ -274,7 +266,7 @@ mod tests {
         out.extend_from_slice(&32u16.to_le_bytes()); // e_phentsize (at offset 42)
         out.extend_from_slice(&1u16.to_le_bytes()); // e_phnum (at offset 44)
         out.extend_from_slice(&[0u8; 6]); // e_shentsize + e_shnum + e_shstrndx
-        // Program header
+                                          // Program header
         out.extend_from_slice(&PT_LOAD.to_le_bytes());
         out.extend_from_slice(&84u32.to_le_bytes()); // p_offset (after ehdr+phdr)
         out.extend_from_slice(&0x1000u32.to_le_bytes()); // p_vaddr

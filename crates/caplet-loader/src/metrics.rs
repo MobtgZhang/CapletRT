@@ -10,61 +10,60 @@
 //!   feature. Useful for postmortem analysis when a load fails in
 //!   production and the developer can't attach a probe.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use caplet_sync::SpinLock;
 
 /// Monotonic counter, queried via [`LoaderMetrics::snapshot`].
-#[derive(Debug, Default)]
 pub struct LoaderMetrics {
     /// Successful `.capp` loads.
-    pub ok_capp: AtomicU64,
+    pub ok_capp: SpinLock<u64>,
     /// Successful ELF loads.
-    pub ok_elf: AtomicU64,
+    pub ok_elf: SpinLock<u64>,
     /// Parse-stage failures.
-    pub fail_parse: AtomicU64,
+    pub fail_parse: SpinLock<u64>,
     /// Signature-check failures.
-    pub fail_signature: AtomicU64,
+    pub fail_signature: SpinLock<u64>,
     /// Relocation-stage failures.
-    pub fail_reloc: AtomicU64,
+    pub fail_reloc: SpinLock<u64>,
     /// Memory-pool allocation failures.
-    pub fail_alloc: AtomicU64,
+    pub fail_alloc: SpinLock<u64>,
 }
 
 impl LoaderMetrics {
     /// Allocate a fresh metrics block. Static instance via [`METRICS`].
     pub const fn new() -> Self {
         Self {
-            ok_capp: AtomicU64::new(0),
-            ok_elf: AtomicU64::new(0),
-            fail_parse: AtomicU64::new(0),
-            fail_signature: AtomicU64::new(0),
-            fail_reloc: AtomicU64::new(0),
-            fail_alloc: AtomicU64::new(0),
+            ok_capp: SpinLock::new(0),
+            ok_elf: SpinLock::new(0),
+            fail_parse: SpinLock::new(0),
+            fail_signature: SpinLock::new(0),
+            fail_reloc: SpinLock::new(0),
+            fail_alloc: SpinLock::new(0),
         }
     }
 
     /// Increment the "capp load OK" counter.
     pub fn inc_capp(&self) {
-        self.ok_capp.fetch_add(1, Ordering::Relaxed);
+        bump(&self.ok_capp);
     }
     /// Increment the "ELF load OK" counter.
     pub fn inc_elf(&self) {
-        self.ok_elf.fetch_add(1, Ordering::Relaxed);
+        bump(&self.ok_elf);
     }
     /// Increment the parse-failure counter.
     pub fn inc_parse_fail(&self) {
-        self.fail_parse.fetch_add(1, Ordering::Relaxed);
+        bump(&self.fail_parse);
     }
     /// Increment the signature-failure counter.
     pub fn inc_signature_fail(&self) {
-        self.fail_signature.fetch_add(1, Ordering::Relaxed);
+        bump(&self.fail_signature);
     }
     /// Increment the relocation-failure counter.
     pub fn inc_reloc_fail(&self) {
-        self.fail_reloc.fetch_add(1, Ordering::Relaxed);
+        bump(&self.fail_reloc);
     }
     /// Increment the allocation-failure counter.
     pub fn inc_alloc_fail(&self) {
-        self.fail_alloc.fetch_add(1, Ordering::Relaxed);
+        bump(&self.fail_alloc);
     }
 
     /// Read every counter atomically and pack them into a
@@ -73,14 +72,27 @@ impl LoaderMetrics {
     /// one), but that is acceptable for metrics.
     pub fn snapshot(&self) -> LoaderSnapshot {
         LoaderSnapshot {
-            ok_capp: self.ok_capp.load(Ordering::Relaxed),
-            ok_elf: self.ok_elf.load(Ordering::Relaxed),
-            fail_parse: self.fail_parse.load(Ordering::Relaxed),
-            fail_signature: self.fail_signature.load(Ordering::Relaxed),
-            fail_reloc: self.fail_reloc.load(Ordering::Relaxed),
-            fail_alloc: self.fail_alloc.load(Ordering::Relaxed),
+            ok_capp: *self.ok_capp.lock(),
+            ok_elf: *self.ok_elf.lock(),
+            fail_parse: *self.fail_parse.lock(),
+            fail_signature: *self.fail_signature.lock(),
+            fail_reloc: *self.fail_reloc.lock(),
+            fail_alloc: *self.fail_alloc.lock(),
         }
     }
+}
+
+impl Default for LoaderMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Increment a counter without relying on 64-bit atomics, which are not
+/// available on targets such as `riscv32imac`.
+fn bump(counter: &SpinLock<u64>) {
+    let mut value = counter.lock();
+    *value = value.wrapping_add(1);
 }
 
 /// Non-atomic snapshot suitable for printing.
@@ -150,43 +162,57 @@ mod ring {
 
     /// Bounded audit ring buffer, capacity 16.
     pub struct AuditRing {
-        /// Stored records; `None` for never-overwritten slots.
+        state: SpinLock<RingState>,
+    }
+
+    struct RingState {
         buf: [Option<AuditRecord>; 16],
-        /// Index of the next write.
         head: usize,
-        /// Number of valid entries (capped at 16).
         len: usize,
-        /// Lock making the push atomic.
-        lock: SpinLock<()>,
     }
 
     impl AuditRing {
         /// Allocate a fresh ring. Static instance via [`AUDIT`].
         pub const fn new() -> Self {
             Self {
-                buf: [None; 16],
-                head: 0,
-                len: 0,
-                lock: SpinLock::new(()),
+                state: SpinLock::new(RingState {
+                    buf: [None; 16],
+                    head: 0,
+                    len: 0,
+                }),
             }
         }
 
         /// Push a new record, evicting the oldest if full.
-        pub fn push(&mut self, r: AuditRecord) {
-            self.buf[self.head] = Some(r);
-            self.head = (self.head + 1) % self.buf.len();
-            if self.len < self.buf.len() {
-                self.len += 1;
+        pub fn push(&self, r: AuditRecord) {
+            let mut state = self.state.lock();
+            let head = state.head;
+            state.buf[head] = Some(r);
+            state.head = (state.head + 1) % state.buf.len();
+            if state.len < state.buf.len() {
+                state.len += 1;
             }
         }
 
-        /// Iterate from oldest to newest.
-        pub fn iter_oldest(&self) -> impl Iterator<Item = &AuditRecord> {
-            let start = (self.head + self.buf.len() - self.len) % self.buf.len();
-            (0..self.len).map(move |i| {
-                let idx = (start + i) % self.buf.len();
-                self.buf[idx].as_ref().expect("audit ring entry present")
-            })
+        /// Copy the currently stored records from oldest to newest.
+        pub fn snapshot(&self) -> [Option<AuditRecord>; 16] {
+            let state = self.state.lock();
+            let mut out = [None; 16];
+            let start = (state.head + state.buf.len() - state.len) % state.buf.len();
+            for (i, slot) in out.iter_mut().take(state.len).enumerate() {
+                *slot = state.buf[(start + i) % state.buf.len()];
+            }
+            out
+        }
+
+        /// Number of valid records currently in the ring.
+        pub fn len(&self) -> usize {
+            self.state.lock().len
+        }
+
+        /// Return `true` when no audit records have been stored.
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
         }
     }
 
@@ -201,7 +227,6 @@ mod ring {
 
     /// Push a single record with a stringy name.
     pub fn push_outcome(name: &[u8], key_id: u32, outcome: AuditOutcome) {
-        let _guard = AUDIT.lock.lock();
         let mut tag = [0u8; 16];
         let n = name.len().min(16);
         tag[..n].copy_from_slice(&name[..n]);

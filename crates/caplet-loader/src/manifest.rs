@@ -33,7 +33,11 @@ pub struct CapDescriptor {
 impl CapDescriptor {
     /// Construct from a string tag and permission/safety values.
     pub fn new(tag: impl Into<String>, perms: u32, safety: u8) -> Self {
-        Self { tag: tag.into(), perms, safety }
+        Self {
+            tag: tag.into(),
+            perms,
+            safety,
+        }
     }
 }
 
@@ -68,6 +72,12 @@ pub struct ModuleManifest {
     pub data_size: u32,
     /// Identifier of the public key needed to verify the signature.
     pub public_key_id: u32,
+    /// Whether the container carries an Ed25519 signature that must be
+    /// verified before loading.
+    pub signed: bool,
+    /// Whether `.capp` entry point and relocation addresses are relative to
+    /// the image base.
+    pub relocatable: bool,
     /// Ed25519 signature over the rest of the container.
     pub signature: [u8; 64],
 }
@@ -89,6 +99,8 @@ impl ModuleManifest {
             text_size: 0,
             data_size: 0,
             public_key_id: 0,
+            signed: false,
+            relocatable: false,
             signature: [0u8; 64],
         }
     }
