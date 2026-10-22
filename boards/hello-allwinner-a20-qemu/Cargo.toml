@@ -1,0 +1,20 @@
+﻿[package]
+name = "hello-allwinner-a20-qemu"
+version = "0.1.0"
+edition = "2021"
+# This binary is not included in the default workspace build; it is built via target-specific scripts.
+# See the workspace Cargo.toml for more information.
+
+# We need the target-none feature to avoid std
+[features]
+default = []
+target-none = []
+
+[[bin]]
+name = "hello-allwinner-a20-qemu"
+required-features = ["target-none"]
+test = false
+
+[dependencies]
+caplet-allwinner = { path = "../../ports/allwinner", default-features = false }
+caplet-cortex-a = { path = "../../ports/cortex-a", default-features = false, features = ["cortex_a9"] }

@@ -1,0 +1,13 @@
+# Default build target for this board only.
+#
+# Allwinner A20 = ARM Cortex-A8 = ARMv7-A (A32), emulated by QEMU's
+# `vexpress-a9` machine.
+#
+# NOTE: `-Tlink.x` is deliberately NOT set here. It is passed by
+# `build.rs`, which also copies `link.x` into `OUT_DIR` and adds that
+# directory to the linker search path. A bare `-Tlink.x` in rustflags
+# resolves relative to the current working directory, so it broke whenever
+# cargo was invoked from the workspace root instead of from this board
+# directory (`rust-lld: error: cannot find linker script link.x`).
+[build]
+target = "armv7a-none-eabihf"

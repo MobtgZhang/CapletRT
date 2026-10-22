@@ -1,0 +1,14 @@
+// Minimal real-hardware A20 model for the bring-up board.
+//
+// Mirrors the sun7i memory map used by QEMU's `cubieboard` machine and
+// Renode's bundled `platforms/cpus/a20.repl`, but only instantiates the
+// peripherals this image touches (DRAM, Cortex-A8, UART0).
+
+memoryRam: Memory.MappedMemory @ sysbus 0x40000000
+    size: 0x80000000
+
+cpu: CPU.ARMv7A @ sysbus
+    cpuType: "cortex-a8"
+
+uart0: UART.NS16550 @ sysbus 0x01C28000
+    wideRegisters: true
