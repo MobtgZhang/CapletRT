@@ -15,13 +15,6 @@ pub struct Spawner {
     executor: Arc<Executor>,
 }
 
-// SAFETY: The `Arc<Executor>` enforces single ownership of the mutable
-// executor state; the executor is intended to be driven by the same single
-// kernel context so `Send`/`Sync` are conservative upper bounds. The raw
-// pointer in the previous implementation was unsound and is replaced.
-unsafe impl Send for Spawner {}
-unsafe impl Sync for Spawner {}
-
 impl Spawner {
     /// Create a spawner for the given executor.
     pub fn new(executor: Arc<Executor>) -> Self {

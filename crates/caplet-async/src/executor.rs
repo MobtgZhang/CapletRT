@@ -12,12 +12,12 @@ use crate::wake_source::WakeSource;
 use crate::waker::CapletWaker;
 use ::caplet_sync::SpinLock;
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use core::task::{Context, Poll};
+use core::task::Context;
 
 /// Future stored in the executor
 type BoxedFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -53,6 +53,17 @@ struct ExecutorTask {
     priority: u8,
     /// Stack size requirement
     stack_size: usize,
+}
+
+/// Public metadata snapshot for one executor task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskInfo {
+    /// Task identifier assigned by [`Executor::spawn`].
+    pub id: u32,
+    /// Scheduling priority (lower is higher priority).
+    pub priority: u8,
+    /// Stack reservation requested at spawn time, in bytes.
+    pub stack_size: usize,
 }
 
 /// Executor state
@@ -138,12 +149,7 @@ impl Executor {
         self.spawn_with_dyn(future, priority, stack_size)
     }
 
-    fn spawn_with_dyn(
-        &self,
-        future: BoxedFuture,
-        priority: u8,
-        stack_size: usize,
-    ) -> u32 {
+    fn spawn_with_dyn(&self, future: BoxedFuture, priority: u8, stack_size: usize) -> u32 {
         let id = self
             .inner
             .lock()
@@ -167,53 +173,68 @@ impl Executor {
         id
     }
 
-    /// Run a single iteration of the executor.
+    /// Run one scheduling cycle.
+    ///
+    /// A cycle polls a snapshot of the tasks that were ready when the cycle
+    /// started.  Wakes raised while a task is being polled are queued for the
+    /// next cycle.  This distinction matters for `yield_now()`: a high
+    /// priority task that immediately wakes itself is polled once per cycle,
+    /// so lower priority tasks cannot be starved by an ever-growing heap of
+    /// self-wake entries.
     pub fn run_once(&self) -> bool {
-        let mut guard = self.inner.lock();
-        guard.state = ExecutorState::Running;
+        let queue = self.shared_queue();
+        let snapshot = queue.take_ready_snapshot();
+        if snapshot.is_empty() {
+            self.inner.lock().state = ExecutorState::Idle;
+            return false;
+        }
 
-        // Get the next task to run
-        let entry = match guard.wake_queue.pop() {
-            Some(e) => e,
-            None => {
-                guard.state = ExecutorState::Idle;
-                return false;
+        // A task may have received several wakes before the cycle started.
+        // Poll it at most once this cycle; later wakes remain in the queue for
+        // the next cycle.
+        let mut seen = BTreeSet::new();
+        let mut polled = false;
+        for entry in snapshot {
+            if !seen.insert(entry.task_id.as_u32()) {
+                continue;
             }
-        };
-
-        let task_id = entry.task_id;
-        let task_id_u32 = task_id.as_u32();
-        guard.current_task = Some(task_id_u32);
-
-        // Build a real waker that pushes into the executor's queue.
-        let waker = CapletWaker::new(
-            task_id_u32,
-            guard.tasks.get(&task_id_u32).map(|t| t.priority).unwrap_or(16),
-            Arc::clone(&guard.wake_queue),
-        )
-        .into_waker();
-        let mut cx = Context::from_waker(&waker);
-
-        // Poll the task.
-        let poll_result = match guard.tasks.get_mut(&task_id_u32) {
-            Some(task) => task.future.as_mut().poll(&mut cx),
-            None => {
-                guard.current_task = None;
-                return true;
-            }
-        };
-
-        match poll_result {
-            Poll::Ready(()) => {
-                guard.tasks.remove(&task_id_u32);
-            }
-            Poll::Pending => {
-                // Task yielded. It will be re-enqueued if and only if
-                // its waker is called. We do NOT auto-requeue.
+            if self.poll_task(entry.task_id.as_u32()) {
+                polled = true;
             }
         }
 
-        guard.current_task = None;
+        polled
+    }
+
+    fn poll_task(&self, task_id: u32) -> bool {
+        // Never hold the executor lock across user code.  A future is allowed
+        // to spawn another task or call `Executor::wake`, both of which take
+        // this lock.  Removing the task for the duration of the poll also
+        // makes re-entrant executor calls safe.
+        let mut task = {
+            let mut inner = self.inner.lock();
+            inner.state = ExecutorState::Running;
+            inner.current_task = Some(task_id);
+            match inner.tasks.remove(&task_id) {
+                Some(task) => task,
+                None => {
+                    inner.current_task = None;
+                    return false;
+                }
+            }
+        };
+
+        let queue = self.shared_queue();
+        let waker = CapletWaker::new(task_id, task.priority, queue).into_waker();
+        let mut cx = Context::from_waker(&waker);
+        let poll_result = task.future.as_mut().poll(&mut cx);
+        drop(waker);
+
+        let mut inner = self.inner.lock();
+        if poll_result.is_pending() {
+            inner.tasks.insert(task_id, task);
+        }
+        inner.current_task = None;
         true
     }
 
@@ -281,6 +302,16 @@ impl Executor {
     /// Get number of tasks
     pub fn task_count(&self) -> usize {
         self.inner.lock().tasks.len()
+    }
+
+    /// Look up metadata for a live task.
+    pub fn task_info(&self, task_id: u32) -> Option<TaskInfo> {
+        let inner = self.inner.lock();
+        inner.tasks.get(&task_id).map(|task| TaskInfo {
+            id: task.id,
+            priority: task.priority,
+            stack_size: task.stack_size,
+        })
     }
 
     /// Get current executor state

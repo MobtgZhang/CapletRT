@@ -6,7 +6,7 @@
 
 extern crate alloc;
 
-use crate::wake_queue::{WakeEntry, WakeQueue, SharedWakeQueue};
+use crate::wake_queue::{SharedWakeQueue, WakeEntry, WakeQueue};
 use crate::wake_source::WakeSource;
 use alloc::sync::Arc;
 use alloc::task::Wake;

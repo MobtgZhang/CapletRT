@@ -8,17 +8,17 @@
 
 extern crate alloc;
 
+pub mod async_task;
+pub mod block_on;
 pub mod executor;
-pub mod waker;
+pub mod spawner;
 pub mod wake_queue;
 pub mod wake_source;
-pub mod async_task;
-pub mod spawner;
-pub mod block_on;
+pub mod waker;
 
+pub use async_task::AsyncTask;
+pub use block_on::block_on;
 pub use executor::Executor;
+pub use spawner::{Spawner, TaskHandle};
 pub use wake_queue::WakeQueue;
 pub use wake_source::WakeSource;
-pub use async_task::AsyncTask;
-pub use spawner::{Spawner, TaskHandle};
-pub use block_on::block_on;

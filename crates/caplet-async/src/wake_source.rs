@@ -1,7 +1,7 @@
 //! Wake source enumeration
 
-use alloc::sync::Arc;
 use crate::waker::CapletWaker;
+use alloc::sync::Arc;
 
 /// Source of a wake-up event
 #[derive(Debug, Clone)]

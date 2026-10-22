@@ -75,7 +75,11 @@ fn pending_task_is_not_repolled_without_waker() {
                     Poll::Pending
                 }
             }
-            One { polls: polls_c, polled: false }.await
+            One {
+                polls: polls_c,
+                polled: false,
+            }
+            .await
         },
         8,
         1024,
@@ -87,6 +91,60 @@ fn pending_task_is_not_repolled_without_waker() {
 }
 
 #[test]
+fn self_waking_high_priority_task_does_not_starve_low_priority() {
+    let ex = Executor::new();
+    let high = Arc::new(AtomicU32::new(0));
+    let low = Arc::new(AtomicU32::new(0));
+    let high_c = Arc::clone(&high);
+    let low_c = Arc::clone(&low);
+
+    // Priority 0 is the highest priority.  Both futures yield exactly once
+    // per poll, so a correctly batched executor must make progress on both.
+    ex.spawn_with(
+        async move {
+            for _ in 0..8 {
+                high_c.fetch_add(1, Ordering::Relaxed);
+                yield_once().await;
+            }
+        },
+        0,
+        1024,
+    );
+    ex.spawn_with(
+        async move {
+            for _ in 0..4 {
+                low_c.fetch_add(1, Ordering::Relaxed);
+                yield_once().await;
+            }
+        },
+        3,
+        1024,
+    );
+
+    ex.run_until_idle();
+    assert_eq!(ex.task_count(), 0);
+    assert_eq!(high.load(Ordering::Relaxed), 8);
+    assert_eq!(low.load(Ordering::Relaxed), 4);
+}
+
+async fn yield_once() {
+    struct YieldOnce(bool);
+    impl Future for YieldOnce {
+        type Output = ();
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0 {
+                Poll::Ready(())
+            } else {
+                self.0 = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+    YieldOnce(false).await
+}
+
+#[test]
 fn executor_wake_reruns_task() {
     let ex = Executor::new();
     let polls = Arc::new(AtomicU32::new(0));
@@ -95,7 +153,7 @@ fn executor_wake_reruns_task() {
     let task_id = ex.spawn_with(
         CountWakesTask {
             polls: polls_c,
-            target: target as u32,
+            target,
             done: Arc::new(Mutex::new(false)),
         },
         8,

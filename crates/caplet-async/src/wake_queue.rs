@@ -5,11 +5,11 @@
 //! `SpinLock` so the same `Arc<WakeQueue>` can be cloned into every waker.
 
 extern crate caplet_task;
-use caplet_task::TaskId;
 use crate::wake_source::WakeSource;
 use ::caplet_sync::SpinLock;
 use alloc::collections::BinaryHeap;
 use alloc::sync::Arc;
+use caplet_task::TaskId;
 use core::cmp::Ordering;
 use core::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 
@@ -55,7 +55,9 @@ impl PartialOrd for WakeEntry {
 impl Ord for WakeEntry {
     fn cmp(&self, other: &Self) -> Ordering {
         // Lower priority value = higher priority
-        other.priority.cmp(&self.priority)
+        other
+            .priority
+            .cmp(&self.priority)
             .then(self.seq.cmp(&other.seq))
     }
 }
@@ -67,7 +69,11 @@ static SEQ_LO: AtomicU32 = AtomicU32::new(0);
 
 fn next_seq() -> u64 {
     let lo = SEQ_LO.fetch_add(1, AtomicOrdering::Relaxed);
-    let hi = if lo == u32::MAX { SEQ_HI.fetch_add(1, AtomicOrdering::Relaxed) } else { 0 };
+    let hi = if lo == u32::MAX {
+        SEQ_HI.fetch_add(1, AtomicOrdering::Relaxed)
+    } else {
+        0
+    };
     ((hi as u64) << 32) | (lo as u64)
 }
 
@@ -134,6 +140,12 @@ impl WakeQueue {
     /// Clear all entries
     pub fn clear(&self) {
         self.inner.lock().clear();
+    }
+}
+
+impl Default for WakeQueue {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
