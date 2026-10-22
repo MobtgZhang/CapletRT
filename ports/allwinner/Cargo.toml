@@ -1,0 +1,20 @@
+﻿[package]
+name = "caplet-allwinner"
+version = "0.1.0"
+edition = "2021"
+# This port is not included in the default workspace build; it is built via target-specific scripts.
+# See the workspace Cargo.toml for more information.
+
+[dependencies]
+caplet-cap = { path = "../../crates/caplet-cap" }
+caplet-kernel = { path = "../../crates/caplet-kernel" }
+caplet-cortex-a = { path = "../cortex-a", optional = true }
+# We might need to add specific HAL or SBC support for Allwinner later.
+# For now, we reuse the cortex-a port as a base for ARM Cortex-A8/A20.
+
+[features]
+default = ["cortex-a"]
+# Re-export the Cortex-A architecture port. Disable this for tiny
+# bring-up images that only need the sunxi UART and provide their own
+# panic handler/allocator.
+cortex-a = ["dep:caplet-cortex-a"]
