@@ -1,0 +1,8 @@
+# Renode boot script for medical-device.
+mach create "medical-device"
+machine LoadPlatformDescription @REPL@
+sysbus LoadELF @ELF@
+sysbus.cpu.semihosting.uart CreateFileBackend @OUT@
+start
+sleep 3
+quit
