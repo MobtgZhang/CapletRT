@@ -21,6 +21,7 @@ pub mod mmu;
 pub mod panic;
 pub mod pl011_uart;
 pub mod smc;
+pub mod smp;
 pub mod tick;
 
 pub use boot::cortex_a_boot;

@@ -7,19 +7,23 @@ use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// Base address of the UART (from `boot.rs`).
-pub const PL011_BASE: usize = 0x1000_1000;
+pub const PL011_BASE: usize = 0x1000_9000;
 
 /// Data register (write = TX, read = RX).
-const UART_DR: usize = PL011_BASE + 0x00;
+const UART_DR: usize = PL011_BASE;
 /// Flag register.
 const UART_FR: usize = PL011_BASE + 0x18;
 /// Integer baud-rate divisor.
+#[cfg(target_arch = "arm")]
 const UART_IBRD: usize = PL011_BASE + 0x24;
 /// Fractional baud-rate divisor.
+#[cfg(target_arch = "arm")]
 const UART_FBRD: usize = PL011_BASE + 0x28;
 /// Line control register.
+#[cfg(target_arch = "arm")]
 const UART_LCRH: usize = PL011_BASE + 0x2C;
 /// Control register.
+#[cfg(target_arch = "arm")]
 const UART_CR: usize = PL011_BASE + 0x30;
 
 /// TX FIFO full bit in `UART_FR`.
@@ -51,7 +55,16 @@ impl Pl011Uart {
         if p.is_null() {
             None
         } else {
-            Some(Self { base: 0 })
+            // SAFETY: `install` only stores pointers to `Pl011Uart`
+            // values that remain alive for the program lifetime
+            // (normally a `static`).  Copy the address out rather than
+            // aliasing the installed object.
+            let base = unsafe { (*p).base };
+            if base == 0 {
+                None
+            } else {
+                Some(Self { base })
+            }
         }
     }
 
@@ -61,7 +74,7 @@ impl Pl011Uart {
         // caller can still install a no-op stub via `take()`.
         #[cfg(not(target_arch = "arm"))]
         {
-            return;
+            // No PL011 exists on the host; the driver stays a no-op stub.
         }
         #[cfg(target_arch = "arm")]
         unsafe {
@@ -80,9 +93,7 @@ impl Pl011Uart {
     /// Write a single byte.
     pub fn putc(&self, c: u8) {
         unsafe {
-            while (read_volatile((self.base + UART_FR - PL011_BASE) as *const u32) & FR_TXFF)
-                != 0
-            {
+            while (read_volatile((self.base + UART_FR - PL011_BASE) as *const u32) & FR_TXFF) != 0 {
                 core::hint::spin_loop();
             }
             write_volatile((self.base + UART_DR - PL011_BASE) as *mut u32, c as u32);
@@ -114,9 +125,10 @@ mod tests {
         let mut u = Pl011Uart::new(PL011_BASE);
         u.init();
         u.install();
-        // On host test we cannot exercise the actual UART
-        // driver because the address is unmapped. We instead
-        // assert that the install mechanism works.
-        let _ = Pl011Uart::take();
+        // The installed pointer must round-trip: the previous
+        // implementation returned a driver with `base = 0` and would
+        // fault on the first register access on real hardware.
+        let taken = Pl011Uart::take().expect("installed UART");
+        assert_eq!(taken.base, PL011_BASE);
     }
 }

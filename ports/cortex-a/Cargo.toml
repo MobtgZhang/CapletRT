@@ -1,24 +1,24 @@
-[package]
+﻿[package]
 name = "caplet-cortex-a"
-description = "Cortex-A architecture port for CapletRT (M3 — QEMU vexpress-a9 SMP)"
+description = "Cortex-A architecture port for CapletRT (M3 鈥?QEMU vexpress-a9 SMP)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
 [dependencies]
-cortex-m.workspace = true
-cortex-m-rt.workspace = true
-cortex-m-semihosting.workspace = true
-caplet-kernel = { path = "../../crates/caplet-kernel" }
+caplet-kernel = { path = "../../crates/caplet-kernel", default-features = false }
 caplet-hal = { path = "../../crates/caplet-hal" }
 caplet-log = { path = "../../crates/caplet-log" }
 caplet-sync = { path = "../../crates/caplet-sync" }
 
 [features]
-default = ["cortex_a9"]
+default = ["cortex_a9", "panic-handler"]
 cortex_a9 = []
 cortex_a53 = []
+# Define the fail-stop panic handler.  Boards that install their own
+# handler (and their own console) disable this feature.
+panic-handler = []
 
 [profile.dev]
 opt-level = 0

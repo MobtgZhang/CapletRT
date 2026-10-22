@@ -17,13 +17,26 @@ const AP_PRIV_RW: u32 = 0b01 << 10;
 const AP_USER_RW: u32 = 0b11 << 10;
 const TEX_0_C_0_B_1: u32 = 0b0000_1010; // TEX=0, C=0, B=1 = strongly ordered
 const SECTION_BIT: u32 = 1 << 1;
-const PAGE_TABLE_PAGE_PERMS: u32 = AP_PRIV_RW | SECTION_BIT;
 
 /// Page permission bits as understood by the kernel core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct APagePerms {
     /// Raw AP bits, etc.
     bits: u32,
+}
+
+/// AArch32 requires TTBR0 to be 16 KiB aligned (bits 13:0 are
+/// ignored).  The table is deliberately a process-wide static: a
+/// table living in a stack local would be overwritten as soon as the
+/// kernel starts using its stack after `Mmu::enable`.
+#[repr(align(16384))]
+struct L1Table([u32; L1_SIZE]);
+
+static mut L1_TABLE: L1Table = L1Table([0; L1_SIZE]);
+
+/// Address of the process-wide L1 translation table.
+pub fn l1_table_ptr() -> *mut u32 {
+    unsafe { core::ptr::addr_of_mut!(L1_TABLE.0) as *mut u32 }
 }
 
 impl APagePerms {
@@ -54,8 +67,6 @@ impl APagePerms {
 
 /// MMU abstraction backed by a static L1 table.
 pub struct Mmu {
-    /// Static L1 page table.
-    l1: [u32; L1_SIZE],
     /// Has the MMU been enabled?
     enabled: bool,
 }
@@ -63,10 +74,7 @@ pub struct Mmu {
 impl Mmu {
     /// Construct a new MMU with the L1 table zeroed.
     pub const fn new() -> Self {
-        Self {
-            l1: [0; L1_SIZE],
-            enabled: false,
-        }
+        Self { enabled: false }
     }
 
     /// Map a contiguous physical region starting at `paddr` into the
@@ -94,7 +102,8 @@ impl Mmu {
             if idx >= L1_SIZE {
                 return Err(MmuError::OutOfMemory);
             }
-            self.l1[idx] = (p & 0xFFF0_0000) | kernel_perms.raw() | SECTION_BIT;
+            let desc = (p & 0xFFF0_0000) | kernel_perms.raw() | SECTION_BIT;
+            unsafe { core::ptr::write_volatile(l1_table_ptr().add(idx), desc) };
             offset = offset.wrapping_add(0x10_0000);
         }
         Ok(())
@@ -112,7 +121,8 @@ impl Mmu {
             if idx >= L1_SIZE {
                 return Err(MmuError::OutOfMemory);
             }
-            self.l1[idx] = 0;
+            unsafe { core::ptr::write_volatile(l1_table_ptr().add(idx), 0) };
+            self.tlb_invalidate(v);
             offset = offset.wrapping_add(0x10_0000);
         }
         Ok(())
@@ -120,29 +130,18 @@ impl Mmu {
 
     /// Enable the MMU by writing TTBR0, DACR, and the SCTLR bits
     /// for MMU + caches. Performs a TLB invalidate VA after.
+    ///
+    /// # Safety
+    ///
+    /// The L1 table must contain identity mappings for the executing
+    /// code, stack, and all accessed MMIO before this function is called.
     pub unsafe fn enable(&mut self) {
-        let l1_addr = self.l1.as_ptr() as u32;
+        let l1_addr = l1_table_ptr() as u32;
         #[cfg(target_arch = "arm")]
         {
-            core::arch::asm!(
-                // Set TTBR0
-                "mcr p15, 0, {ttbr}, c2, c0, 0",
-                // Domain 0 = client (0b01)
-                "mov r1, #0x1",
-                "mcr p15, 0, r1, c3, c0, 0",
-                // Invalidate TLB
-                "mov r1, #0",
-                "mcr p15, 0, r1, c8, c7, 0",
-                // Enable MMU + caches
-                "mrc p15, 0, r1, c1, c0, 0",
-                "orr r1, r1, #0x5", // M + C
-                "orr r1, r1, #0x1000", // I (instruction cache)
-                "mcr p15, 0, r1, c1, c0, 0",
-                "dsb sy",
-                "isb",
-                ttbr = in(reg) l1_addr,
-                out("r1") _,
-            );
+            // SAFETY: forwarded from the caller, which must have
+            // populated the table with identity mappings.
+            unsafe { enable_table(l1_addr) };
         }
         #[cfg(not(target_arch = "arm"))]
         {
@@ -179,6 +178,48 @@ impl Mmu {
     }
 }
 
+/// Install a shared L1 section table on the current CPU and enable the
+/// MMU, D-cache and I-cache.
+///
+/// This is also used by secondary CPUs: they share the primary's
+/// identity-mapped table, but each core must program its own TTBR0,
+/// DACR, TLB and SCTLR.
+///
+/// # Safety
+///
+/// `l1_table` must point to a 16 KiB-aligned table whose entries
+/// identity-map the executing code, the current stack and every MMIO
+/// window used before the table can be extended.
+pub unsafe fn enable_table(l1_table: u32) {
+    #[cfg(target_arch = "arm")]
+    // SAFETY: the caller guarantees a valid table and identity map.
+    unsafe {
+        core::arch::asm!(
+            // Set TTBR0.
+            "mcr p15, 0, {ttbr}, c2, c0, 0",
+            // Domain 0 = client (0b01).
+            "mov r1, #0x1",
+            "mcr p15, 0, r1, c3, c0, 0",
+            // Invalidate the local unified TLB.
+            "mov r1, #0",
+            "mcr p15, 0, r1, c8, c7, 0",
+            // Enable MMU, D-cache and I-cache.
+            "mrc p15, 0, r1, c1, c0, 0",
+            "orr r1, r1, #0x5",
+            "orr r1, r1, #0x1000",
+            "mcr p15, 0, r1, c1, c0, 0",
+            "dsb sy",
+            "isb",
+            ttbr = in(reg) l1_table,
+            out("r1") _,
+        );
+    }
+    #[cfg(not(target_arch = "arm"))]
+    {
+        let _ = l1_table;
+    }
+}
+
 impl Default for Mmu {
     fn default() -> Self {
         Self::new()
@@ -201,13 +242,12 @@ impl caplet_kernel::arch::Arch for Mmu {
         // the trait.
     }
 
-    unsafe fn context_switch(_prev: *mut u32, _next: *const u32) {
-        // Filled in by context.rs at link time.
+    unsafe fn context_switch(_prev: *mut usize, _next: *const usize) {
+        unsafe { crate::context::__caplet_switch(_prev, _next.cast_mut()) }
     }
 
-    unsafe fn start_first_task(_next: *const u32) -> ! {
-        // Filled in by context.rs at link time.
-        loop {}
+    unsafe fn start_first_task(_next: *const usize) -> ! {
+        unsafe { crate::context::__caplet_start_first(_next) }
     }
 
     fn now_ticks() -> u64 {

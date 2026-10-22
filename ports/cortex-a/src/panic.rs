@@ -3,10 +3,13 @@
 //! docv1.md §10.5 mandates fail-stop: halt + log on panic. In the
 //! QEMU smoke test the log goes to the PL011 UART.
 
+#[cfg(all(target_os = "none", feature = "panic-handler"))]
 use crate::pl011_uart::Pl011Uart;
 
 /// Shim that lets the panic handler wait for an interrupt forever.
+#[cfg(all(target_os = "none", feature = "panic-handler"))]
 mod cortex_a_arch {
+    #[cfg(target_os = "none")]
     pub unsafe fn wfi() {
         #[cfg(target_arch = "arm")]
         {
@@ -19,7 +22,7 @@ mod cortex_a_arch {
     }
 }
 
-#[cfg(target_os = "none")]
+#[cfg(all(target_os = "none", not(test), feature = "panic-handler"))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     // Try to grab the UART and dump a message. If the UART is not
@@ -38,5 +41,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         unsafe {
             cortex_a_arch::wfi();
         }
+        core::hint::spin_loop();
     }
 }

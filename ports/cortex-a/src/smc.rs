@@ -13,23 +13,37 @@ pub mod psci {
     pub const CPU_ON: u32 = 0x8400_0003;
 
     /// Issue a PSCI call via SMC #0.
+    ///
+    /// # Safety
+    ///
+    /// Must only be executed in ARM secure monitor mode with a PSCI
+    /// implementation present. `entry_point` must be a valid physical
+    /// address in the target CPU's executable mapping.
     #[inline(always)]
+    #[cfg(target_arch = "arm")]
     pub unsafe fn cpu_on(target_cpu: u32, entry_point: u32, context_id: u32) -> i32 {
         let ret: u32;
         core::arch::asm!(
-            "mov r0, {fid}",
-            "mov r1, {tgt}",
-            "mov r2, {ep}",
-            "mov r3, {cid}",
             "smc #0",
-            "mov {ret}, r0",
-            fid = in(reg) CPU_ON,
-            tgt = in(reg) target_cpu,
-            ep = in(reg) entry_point,
-            cid = in(reg) context_id,
-            ret = out(reg) ret,
-            options(nostack, preserves_flags)
+            inout("r0") CPU_ON => ret,
+            in("r1") target_cpu,
+            in("r2") entry_point,
+            in("r3") context_id,
+            options(nostack)
         );
         ret as i32
+    }
+
+    /// Host-only stub.  PSCI is unavailable outside a bare-metal ARM
+    /// target; returning -1 mirrors the PSCI `NOT_SUPPORTED` error.
+    ///
+    /// # Safety
+    ///
+    /// Kept `unsafe` to match the bare-metal API. The stub performs no
+    /// memory access or privileged operation.
+    #[inline(always)]
+    #[cfg(not(target_arch = "arm"))]
+    pub unsafe fn cpu_on(_target_cpu: u32, _entry_point: u32, _context_id: u32) -> i32 {
+        -1
     }
 }
