@@ -19,6 +19,10 @@ unsafe impl Send for Rtc {}
 
 impl Rtc {
     /// Take RTC0.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure RTC0 is not already owned by another driver.
     pub unsafe fn rtc0() -> Self {
         Self {
             base: nrf52832::RTC0 as *mut raw::RtcBlock,

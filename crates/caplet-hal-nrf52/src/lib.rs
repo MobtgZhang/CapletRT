@@ -9,16 +9,24 @@
 #![allow(unsafe_code)]
 #![deny(missing_docs)]
 
-pub mod raw;
-pub mod uart;
-pub mod gpio;
-pub mod timer;
-pub mod rtc;
+extern crate alloc;
 
-pub use uart::Uarte;
+pub mod gpio;
+pub mod irq;
+pub mod raw;
+pub mod rtc;
+pub mod spim;
+pub mod timer;
+pub mod twim;
+pub mod uart;
+
 pub use gpio::{Pin, Port, PortMode};
-pub use timer::Timer as NrfTimer;
+pub use irq::IrqController;
 pub use rtc::Rtc;
+pub use spim::Spim;
+pub use timer::Timer as NrfTimer;
+pub use twim::Twim;
+pub use uart::Uarte;
 
 /// Re-export HAL trait root.
 pub use caplet_hal as hal;
@@ -27,8 +35,11 @@ pub use caplet_hal as hal;
 pub mod prelude {
     pub use crate::hal::{
         gpio::{GpioMode, GpioPin, GpioPort, PinState},
-        uart::{Uart, UartConfig, UartFmt},
+        i2c::{I2c, I2cConfig},
+        interrupt::{InterruptPriority, IrqHandler},
+        spi::{Spi, SpiConfig},
         timer::Timer as HalTimer,
+        uart::{Uart, UartConfig, UartFmt},
     };
-    pub use crate::{NrfTimer, Pin, Port, PortMode, Rtc, Uarte};
+    pub use crate::{IrqController, NrfTimer, Pin, Port, PortMode, Rtc, Spim, Twim, Uarte};
 }
