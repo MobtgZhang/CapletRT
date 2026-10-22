@@ -23,6 +23,12 @@ pub enum CapError {
     RevocationFailed,
     /// CSpace full
     CSpaceFull,
+    /// The underlying resource is temporarily unavailable
+    Unavailable,
+    /// An operation exceeded its deadline
+    Timeout,
+    /// The underlying hardware reported a failure
+    Hardware,
 }
 
 impl CapError {
@@ -39,6 +45,9 @@ impl CapError {
             CapError::InvalidDerivation => "Invalid capability derivation",
             CapError::RevocationFailed => "Capability revocation failed",
             CapError::CSpaceFull => "CSpace is full",
+            CapError::Unavailable => "Resource unavailable",
+            CapError::Timeout => "Operation timed out",
+            CapError::Hardware => "Hardware failure",
         }
     }
 }

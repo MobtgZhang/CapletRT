@@ -9,31 +9,31 @@
 
 extern crate alloc;
 
+pub mod attenuation;
+pub mod cap;
+pub mod cap_builder;
+pub mod cap_set;
+pub mod cspace;
+pub mod derivation;
+pub mod endpoint;
+pub mod epoch;
 pub mod error;
 pub mod handle;
-pub mod cap;
-pub mod cap_set;
-pub mod cap_builder;
+pub mod parent_link;
 pub mod permissions;
+pub mod revocation;
 pub mod rights;
-pub mod attenuation;
 pub mod safety_bits;
 pub mod safety_policy;
-pub mod derivation;
-pub mod revocation;
-pub mod epoch;
-pub mod parent_link;
-pub mod cspace;
-pub mod endpoint;
 
-pub use error::{CapError, CapResult};
-pub use handle::Handle;
 pub use cap::Cap;
-pub use cap_set::{CapSet, CapKey, AnyCap};
 pub use cap_builder::CapBuilder;
-pub use permissions::Permissions;
-pub use rights::{RightsFilter, MemoryRights};
-pub use safety_bits::SafetyBits;
-pub use epoch::Epoch;
+pub use cap_set::{AnyCap, CapKey, CapSet};
 pub use cspace::CSpace;
 pub use endpoint::{EndpointCapability, EndpointRights};
+pub use epoch::Epoch;
+pub use error::{CapError, CapResult};
+pub use handle::Handle;
+pub use permissions::Permissions;
+pub use rights::{MemoryRights, RightsFilter};
+pub use safety_bits::SafetyBits;

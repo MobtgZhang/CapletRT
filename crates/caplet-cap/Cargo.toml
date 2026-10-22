@@ -7,6 +7,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+caplet-sync = { path = "../caplet-sync" }
 hashbrown.workspace = true
 
 [dev-dependencies]

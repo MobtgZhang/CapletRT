@@ -15,11 +15,9 @@
 //!   only descendants), fall back to slow.
 
 use crate::cspace::CSpace;
-use crate::derivation::cap_derive;
-use crate::epoch::{Epoch, EpochTracker, SlotMetadata};
-use crate::error::{CapError, CapResult};
-use crate::handle::{Generation, Handle, HandleIndex};
-use crate::parent_link::{DerivationNode, ParentLink};
+use crate::epoch::Epoch;
+use crate::error::CapResult;
+use crate::handle::{Handle, HandleIndex};
 
 /// Result of a revocation operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,7 +109,11 @@ impl RevocationOptions {
 
 impl Default for RevocationOptions {
     fn default() -> Self {
-        Self::default()
+        Self {
+            mode: RevocationMode::Hybrid,
+            notify: true,
+            cleanup: true,
+        }
     }
 }
 
@@ -122,11 +124,19 @@ impl Default for RevocationOptions {
 /// 1. Walk the derivation tree starting from `index` to collect
 ///    every descendant index.
 /// 2. Invalidate each collected slot's metadata.
-/// 3. Bump the epoch so any future handle comparisons fail.
+///
+/// The epoch is deliberately not bumped: unrelated capabilities in the same
+/// CSpace must remain valid.
 pub fn revoke_with_descendants(
     cspace: &mut CSpace,
     index: HandleIndex,
 ) -> CapResult<RevocationResult> {
+    // Validate the target before touching the table so a bad index cannot
+    // produce a partial revocation.
+    if cspace.slot_generation(index).is_none() {
+        return Err(crate::error::CapError::NotFound);
+    }
+
     // 1. Collect descendants via BFS over `derivation.parent`.
     let mut to_revoke: alloc::vec::Vec<HandleIndex> = alloc::vec::Vec::new();
     to_revoke.push(index);
@@ -144,15 +154,15 @@ pub fn revoke_with_descendants(
         }
         cursor += 1;
     }
-    // 2. Invalidate each collected slot and free it.
+    // 2. Invalidate each collected slot and free it.  The snapshot is stable
+    // while we hold the exclusive `&mut CSpace`, so every collected slot is
+    // still present.
     let mut count = 0usize;
     for &idx in &to_revoke {
         if cspace.revoke(idx).is_ok() {
             count += 1;
         }
     }
-    // 3. Bump epoch so any cached handles that bypass CSpace also fail.
-    cspace.bump_epoch();
     Ok(RevocationResult {
         revoked_count: count,
         complete: true,
@@ -167,22 +177,37 @@ pub fn revoke_fast(epoch: &mut Epoch) -> RevocationResult {
     RevocationResult::success(0, true)
 }
 
-/// Compatibility wrapper for the global CSpace.
+/// Apply a revocation policy to one capability in `cspace`.
 pub fn cap_revoke(
-    _handle: HandleIndex,
-    epoch: &mut Epoch,
+    cspace: &mut CSpace,
+    handle: HandleIndex,
     options: RevocationOptions,
 ) -> CapResult<RevocationResult> {
     match options.mode() {
-        RevocationMode::Fast => Ok(revoke_fast(epoch)),
-        RevocationMode::Slow => Ok(revoke_fast(epoch)), // no-op stub
-        RevocationMode::Hybrid => Ok(revoke_fast(epoch)),
+        RevocationMode::Fast => {
+            let revoked = cspace.revoke_all_fast();
+            Ok(RevocationResult::success(revoked, true))
+        }
+        RevocationMode::Slow => revoke_with_descendants(cspace, handle),
+        RevocationMode::Hybrid => {
+            let total = cspace.active_count();
+            let subtree = cspace
+                .slot_generation(handle)
+                .and_then(|generation| cspace.lookup(Handle::<()>::new(handle, generation)).ok())
+                .map(|slot| slot.derivation.descendant_count() as usize + 1);
+            if subtree == Some(total) {
+                let revoked = cspace.revoke_all_fast();
+                Ok(RevocationResult::success(revoked, true))
+            } else {
+                revoke_with_descendants(cspace, handle)
+            }
+        }
     }
 }
 
 /// Check if a capability is still valid given the current epoch
 pub fn is_valid_for_epoch<T>(
-    handle: &Handle<T>,
+    _handle: &Handle<T>,
     creation_epoch: Epoch,
     current_epoch: &Epoch,
 ) -> bool {
@@ -192,7 +217,7 @@ pub fn is_valid_for_epoch<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attenuation::Attenuation;
+    use crate::epoch::EpochTracker;
     use crate::permissions::Permissions;
     use crate::safety_bits::SafetyBits;
 
@@ -200,7 +225,8 @@ mod tests {
     fn fast_revoke_bumps_epoch() {
         let mut tracker = EpochTracker::new();
         let e1 = tracker.current();
-        revoke_fast(&mut Epoch::from(tracker.current()));
+        let mut epoch = tracker.current();
+        revoke_fast(&mut epoch);
         tracker.revoke();
         let e2 = tracker.current();
         assert_ne!(e1, e2);
@@ -215,10 +241,18 @@ mod tests {
             .unwrap();
         // Two children.
         let _c1 = cspace
-            .allocate(Permissions::from(1), SafetyBits::default(), Some(root.index()))
+            .allocate(
+                Permissions::from(1),
+                SafetyBits::default(),
+                Some(root.index()),
+            )
             .unwrap();
         let _c2 = cspace
-            .allocate(Permissions::from(1), SafetyBits::default(), Some(root.index()))
+            .allocate(
+                Permissions::from(1),
+                SafetyBits::default(),
+                Some(root.index()),
+            )
             .unwrap();
         assert_eq!(cspace.active_count(), 3);
         // Revoke root + descendants.

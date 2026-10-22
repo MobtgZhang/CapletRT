@@ -39,11 +39,7 @@ pub struct Handle<T> {
 
 impl<T> Clone for Handle<T> {
     fn clone(&self) -> Self {
-        Self {
-            index: self.index,
-            generation: self.generation,
-            _phantom: core::marker::PhantomData,
-        }
+        *self
     }
 }
 

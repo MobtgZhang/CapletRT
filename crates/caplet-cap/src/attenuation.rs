@@ -137,4 +137,9 @@ impl DerivationOptions {
     pub const fn is_one_time(&self) -> bool {
         self.one_time
     }
+
+    /// Get the optional permission attenuation rule.
+    pub const fn attenuation(&self) -> Option<Attenuation> {
+        self.attenuation
+    }
 }

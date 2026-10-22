@@ -173,20 +173,11 @@ impl SafetyBits {
 
     /// Attenuate these safety bits with parent bits
     pub fn attenuate(&self, parent: SafetyBits) -> Self {
-        let mut result = *self;
-        if !parent.audit() {
-            result.0 &= !AUDIT_BIT;
-        }
-        if !parent.infect() {
-            result.0 &= !INFECT_BIT;
-        }
-        if !parent.persistent() {
-            result.0 &= !PERSISTENT_BIT;
-        }
-        if !parent.transferable() {
-            result.0 &= !TRANSFERABLE_BIT;
-        }
-        result
+        // Every safety bit is a restriction on the capability.  A derived
+        // capability must therefore be a subset of its parent across both the
+        // legacy bits (audit/infect/persistent/transferable) and the M3 bits.
+        // Masking the complete word also covers future bit assignments.
+        Self(self.0 & parent.0)
     }
 
     /// Get raw bits
@@ -203,6 +194,7 @@ impl SafetyBits {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::safety_policy::SafetyPolicy;
 
     #[test]
     fn cross_namespace_bit_roundtrip() {
@@ -270,5 +262,14 @@ mod tests {
         assert!(out2.share_physical());
         assert!(out2.mmio_device());
         assert!(out2.module());
+    }
+
+    #[test]
+    fn attenuation_rejects_legacy_bit_amplification() {
+        let parent = SafetyBits::default();
+        let child = SafetyBits::all();
+        let out = child.attenuate(parent);
+        assert_eq!(out.bits(), 0);
+        assert!(!SafetyPolicy::validate_safety_bits(child, parent));
     }
 }

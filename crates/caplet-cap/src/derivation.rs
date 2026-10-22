@@ -2,7 +2,7 @@
 
 use crate::attenuation::DerivationOptions;
 use crate::error::{CapError, CapResult};
-use crate::handle::{Handle, Generation};
+use crate::handle::{Generation, Handle};
 use crate::parent_link::ParentLink;
 use crate::permissions::Permissions;
 use crate::safety_bits::SafetyBits;
@@ -23,7 +23,12 @@ pub struct DerivedCapability<T> {
 
 impl<T> DerivedCapability<T> {
     /// Create a new derived capability
-    pub fn new(handle: Handle<T>, parent: Handle<T>, permissions: Permissions, safety_bits: SafetyBits) -> Self {
+    pub fn new(
+        handle: Handle<T>,
+        parent: Handle<T>,
+        permissions: Permissions,
+        safety_bits: SafetyBits,
+    ) -> Self {
         Self {
             handle,
             permissions,
@@ -56,7 +61,8 @@ pub fn validate_derivation(
     parent_safety: SafetyBits,
     parent_perms: Permissions,
 ) -> bool {
-    SafetyPolicy::validate_derivation(child_safety, child_perms, parent_safety, parent_perms).is_valid()
+    SafetyPolicy::validate_derivation(child_safety, child_perms, parent_safety, parent_perms)
+        .is_valid()
 }
 
 /// Create a new derivation with custom permissions

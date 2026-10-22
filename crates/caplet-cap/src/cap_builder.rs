@@ -3,16 +3,16 @@
 //! Provides a fluent API for constructing capabilities with custom
 //! permissions, safety bits, and derivation options.
 //!
-//! Note: The `build()` method requires kernel integration. In standalone
-//! library mode, it returns an error. When integrated with the kernel's
-//! CSpace management, this can be properly implemented.
+//! [`CapBuilder::build`] creates a detached capability backed by an owned
+//! resource.  [`CapBuilder::build_in`] additionally allocates a CSpace slot,
+//! giving the capability kernel-visible revocation and generation semantics.
 
+use crate::attenuation::DerivationOptions;
 use crate::cap::Cap;
-use crate::error::{CapError, CapResult};
-use crate::handle::Handle;
+use crate::cspace::CSpace;
+use crate::error::CapResult;
 use crate::permissions::Permissions;
 use crate::safety_bits::SafetyBits;
-use crate::attenuation::DerivationOptions;
 
 /// Builder for creating capabilities with a fluent API
 pub struct CapBuilder {
@@ -85,29 +85,36 @@ impl CapBuilder {
         self
     }
 
-    /// Build the capability.
+    /// Build a detached capability that owns `resource`.
     ///
-    /// In standalone library mode, this returns an error because building
-    /// a capability requires access to the kernel's CSpace for slot allocation.
-    ///
-    /// When integrated with the kernel, this should:
-    /// 1. Request a new slot from the CSpace
-    /// 2. Initialize the capability metadata
-    /// 3. Return the capability wrapping the allocated handle
+    /// Detached capabilities support typed access and attenuation, but are
+    /// not attached to a kernel CSpace until [`Self::build_in`] is used.
+    pub fn build<T>(self, resource: T) -> Cap<T> {
+        Cap::detached(resource, self.permissions, self.safety_bits)
+    }
+
+    /// Build a capability and insert it into `cspace`.
     ///
     /// # Errors
     ///
-    /// Returns `CapError::OutOfSlots` if the CSpace is full.
-    /// Returns `CapError::Invalid` if the builder configuration is invalid.
-    pub fn build<T>(self) -> CapResult<Cap<T>> {
-        // In standalone mode, we cannot allocate slots without kernel context.
-        // The kernel integration provides a CSpace backend that can allocate slots.
-        //
-        // To use CapBuilder with the kernel:
-        // 1. Have the kernel provide a `CSpace::allocate()` method
-        // 2. Pass the CSpace reference through a thread-local or global
-        // 3. Replace this stub with actual slot allocation
-        Err(CapError::Invalid)
+    /// Returns [`CapError::CSpaceFull`] or [`CapError::OutOfSlots`] when the
+    /// CSpace cannot accept another capability.
+    pub fn build_in<T: Send + 'static>(
+        self,
+        cspace: &mut CSpace,
+        resource: T,
+    ) -> CapResult<Cap<T>> {
+        cspace.insert_cap(resource, self.permissions, self.safety_bits, None)
+    }
+
+    /// Build a child capability inside `cspace`, applying this builder's
+    /// permissions and safety bits as an attenuation of `parent`.
+    pub fn derive_in<T: Send + 'static>(
+        self,
+        cspace: &mut CSpace,
+        parent: &Cap<T>,
+    ) -> CapResult<Cap<T>> {
+        cspace.derive_cap(parent, self.permissions, self.safety_bits)
     }
 }
 

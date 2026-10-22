@@ -41,7 +41,7 @@ impl CapSet {
     }
 
     /// Get a capability by key
-    pub fn get<Q: ?Sized>(&self, key: &Q) -> Option<&ErasedCap>
+    pub fn get<Q>(&self, key: &Q) -> Option<&ErasedCap>
     where
         CapKey: Borrow<Q>,
         Q: Eq + core::hash::Hash,
@@ -50,7 +50,7 @@ impl CapSet {
     }
 
     /// Remove a capability by key
-    pub fn remove<Q: ?Sized>(&mut self, key: &Q) -> Option<ErasedCap>
+    pub fn remove<Q>(&mut self, key: &Q) -> Option<ErasedCap>
     where
         CapKey: Borrow<Q>,
         Q: Eq + core::hash::Hash,
@@ -59,7 +59,7 @@ impl CapSet {
     }
 
     /// Check if the set contains a key
-    pub fn contains<Q: ?Sized>(&self, key: &Q) -> bool
+    pub fn contains<Q>(&self, key: &Q) -> bool
     where
         CapKey: Borrow<Q>,
         Q: Eq + core::hash::Hash,
@@ -123,7 +123,10 @@ impl CapKey {
 
     /// Get the final component
     pub fn name(&self) -> &str {
-        self.path.rsplit_once('/').map(|(_, n)| n).unwrap_or(&self.path)
+        self.path
+            .rsplit_once('/')
+            .map(|(_, n)| n)
+            .unwrap_or(&self.path)
     }
 }
 
