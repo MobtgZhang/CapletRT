@@ -1,0 +1,13 @@
+[package]
+name = "caplet-stack-analyzer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Placeholder for the M3 worst-case stack analyzer"
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

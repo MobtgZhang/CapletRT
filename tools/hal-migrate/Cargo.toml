@@ -1,0 +1,15 @@
+[package]
+name = "caplet-hal-migrate"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Placeholder for the HAL v0.1 -> v0.2 migration tool (M3)"
+
+# Keep this crate out of the root workspace: it is a planning placeholder,
+# not part of the shipped runtime or the host test matrix.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
