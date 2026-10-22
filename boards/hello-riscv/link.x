@@ -1,57 +1,58 @@
-/* Minimal RISC-V linker script for hello-riscv.
- * This links the kernel directly into DRAM at 0x8000_0000.
- * QEMU loads the ELF at this address.
+/*
+ * Linker script for the RISC-V hello board (QEMU virt / Renode
+ * riscv_virt).  Both platforms load the ELF segments at their physical
+ * addresses; the kernel image is linked directly into DRAM.
  */
-
-MEMORY
-{
-    RAM (rwx)  : ORIGIN = 0x8000_0000, LENGTH = 128M
-}
-
-_stack_size = 4K;
-_heap_size  = 8K;
 
 ENTRY(_start)
 
+MEMORY
+{
+    RAM (rwx) : ORIGIN = 0x80000000, LENGTH = 128M
+}
+
+/* Initial S-mode stack at the top of the 128 MiB RAM window. */
+_estack = ORIGIN(RAM) + LENGTH(RAM);
+
 SECTIONS
 {
-    .text : {
-        *(.text.entry)
-        *(.text)
-        *(.rodata)
+    . = ORIGIN(RAM);
+
+    .text : ALIGN(16)
+    {
+        KEEP(*(.text.entry))
+        *(.text .text.*)
+        *(.rodata .rodata.*)
+        . = ALIGN(8);
         _etext = .;
     } > RAM
 
-    .data : {
+    .data : ALIGN(16)
+    {
         _sdata = .;
-        *(.data)
+        *(.sdata .sdata.*)
+        *(.data .data.*)
+        . = ALIGN(8);
         _edata = .;
     } > RAM
 
-    .sdata : {
-        _ssdata = .;
-        *(.sdata)
-        _esdata = .;
-    } > RAM
-
-    .bss : {
+    .bss (NOLOAD) : ALIGN(16)
+    {
         _sbss = .;
-        *(.bss)
+        *(.sbss .sbss.*)
+        *(.bss .bss.*)
         *(COMMON)
+        . = ALIGN(8);
         _ebss = .;
     } > RAM
 
-    .heap : {
-        . = ALIGN(8);
-        _sheap = .;
-        . += _heap_size;
-        _eheap = .;
-    } > RAM
+    _sheap = .;
+    _eheap = ORIGIN(RAM) + LENGTH(RAM) - 64K;
 
-    .stack : {
-        . = ALIGN(16);
-        _sstack = .;
-        . += _stack_size;
-        _estack = .;
-    } > RAM
+    /DISCARD/ :
+    {
+        *(.eh_frame*)
+        *(.comment)
+        *(.note*)
+    }
 }

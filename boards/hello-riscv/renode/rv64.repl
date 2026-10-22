@@ -1,0 +1,24 @@
+// Renode platform matching QEMU `virt` for a single RV64 hart.
+// PLIC context 1 is the hart-0 supervisor external context, matching
+// the layout QEMU generates for `-machine virt`.
+
+dram: Memory.MappedMemory @ sysbus 0x80000000
+    size: 0x08000000
+
+uart0: UART.NS16550 @ sysbus 0x10000000
+    IRQ -> plic@3
+
+cpu: CPU.RiscV64 @ sysbus
+    cpuType: "rv64gc_zicsr_zifencei"
+    privilegedArchitecture: PrivilegedArchitecture.Priv1_10
+    timeProvider: clint
+    hartId: 0
+
+plic: IRQControllers.PlatformLevelInterruptController @ sysbus 0x0C000000
+    1 -> cpu@11
+    numberOfSources: 64
+    numberOfContexts: 2
+
+clint: IRQControllers.CoreLevelInterruptor @ sysbus 0x02000000
+    [0,1] -> cpu@[3,7]
+    frequency: 10000000

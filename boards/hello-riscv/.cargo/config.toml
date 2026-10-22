@@ -1,16 +1,10 @@
 [build]
-target = "riscv32imac-unknown-none-elf"
+target = "riscv64gc-unknown-none-elf"
 
 [target.riscv32imac-unknown-none-elf]
-runner = "qemu-system-riscv32 -machine virt -cpu rv32 -nographic -m 128M -bios none"
-rustflags = [
-    "-C", "link-arg=-Tlink.x",
-    "-C", "link-arg=-Map=hello-riscv.map",
-]
+runner = "qemu-system-riscv32 -machine virt -cpu rv32 -nographic -m 128M -bios none -kernel"
+linker = "rust-lld"
 
 [target.riscv64gc-unknown-none-elf]
-runner = "qemu-system-riscv64 -machine virt -cpu rv64gc -nographic -m 128M -bios none"
-rustflags = [
-    "-C", "link-arg=-Tlink.x",
-    "-C", "link-arg=-Map=hello-riscv.map",
-]
+runner = "qemu-system-riscv64 -machine virt -cpu rv64 -nographic -m 128M -bios none -kernel"
+linker = "rust-lld"

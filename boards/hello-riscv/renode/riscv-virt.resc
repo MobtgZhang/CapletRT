@@ -1,0 +1,10 @@
+# Render-time placeholders are substituted by tools/sim/run_renode.sh:
+#   @ELF@  absolute path to the RISC-V ELF
+#   @OUT@  absolute path for the UART capture
+mach create "riscv-virt"
+machine LoadPlatformDescription @REPL@
+sysbus LoadELF @ELF@
+uart0 CreateFileBackend @OUT@
+start
+sleep 3
+quit
