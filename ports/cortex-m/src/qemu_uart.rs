@@ -23,8 +23,6 @@ pub struct UartRegisters {
 mod flags {
     pub const TXFE: u32 = 1 << 7; // TX FIFO empty
     pub const RXFE: u32 = 1 << 4; // RX FIFO empty
-    pub const TXFF: u32 = 1 << 5; // TX FIFO full
-    pub const RXFF: u32 = 1 << 6; // RX FIFO full
     pub const BUSY: u32 = 1 << 3; // UART busy
 }
 
@@ -36,9 +34,7 @@ pub struct QemuUart {
 impl QemuUart {
     /// Create a new QEMU UART
     pub fn new() -> Self {
-        Self {
-            base: UART0_BASE,
-        }
+        Self { base: UART0_BASE }
     }
 
     /// Create with custom base address
@@ -49,9 +45,7 @@ impl QemuUart {
     /// Read a register
     fn read_reg(&self, offset: u32) -> u32 {
         // In actual implementation, this would use volatile read
-        unsafe {
-            core::ptr::read_volatile((self.base + offset) as *const u32)
-        }
+        unsafe { core::ptr::read_volatile((self.base + offset) as *const u32) }
     }
 
     /// Write a register

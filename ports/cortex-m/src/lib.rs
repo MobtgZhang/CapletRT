@@ -16,8 +16,10 @@ pub mod systick;
 pub mod tickless;
 
 pub use boot::cortex_m_boot;
-pub use interrupt::{InterruptFrame, ExceptionFrame};
-pub use context::{TaskContext, build_initial_stack, pend_pendsv, set_psp, read_psp, PspSlot};
 #[cfg(target_arch = "arm")]
-pub use context::{__caplet_switch, __caplet_start_first};
-
+pub use context::{__caplet_start_first, __caplet_switch};
+pub use context::{
+    build_initial_stack, pend_pendsv, read_psp, set_pendsv_handler, set_psp, set_svc_handler,
+    ExceptionHook, PspSlot, TaskContext,
+};
+pub use interrupt::{ExceptionFrame, InterruptFrame};

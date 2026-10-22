@@ -15,7 +15,24 @@ caplet-hal = { path = "../../crates/caplet-hal" }
 caplet-log = { path = "../../crates/caplet-log" }
 
 [features]
-default = []
+# `panic-handler` is ON by default because the normal consumer of this crate
+# is a bare-metal `no_std` board binary, which needs a `#[panic_handler]`.
+#
+# Host-side builds that link `std` must turn it off, otherwise both this
+# crate and `std` define the `panic_impl` lang item and the link fails with
+# `E0152: found duplicate lang item 'panic_impl'`.
+#
+# Two distinct situations have to be covered, which is why the handler is
+# gated on BOTH this feature and `not(test)`:
+#
+#   * this crate's *own* unit tests (`cargo test -p caplet-cortex-m`) link
+#     `std` and compile this crate under `cfg(test)` while the default
+#     feature set is still active -> handled by `not(test)`;
+#   * this crate compiled as a *dependency* of a host test (via
+#     `caplet-macros-exports`) is not itself `cfg(test)`, so it needs the
+#     feature to be turned off by the consumer -> handled by the feature.
+default = ["panic-handler"]
+panic-handler = []
 cortex_m3 = []
 cortex_m4 = []
 

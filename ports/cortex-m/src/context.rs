@@ -1,16 +1,20 @@
 //! Context switching for Cortex-M
 //!
-//! The actual context switch is a `extern "C"` assembly routine that
+//! The actual context switch is an `extern "C"` assembly routine that
 //! saves the callee-saved registers of the outgoing task onto its stack
 //! and restores the callee-saved registers of the incoming task.
 //!
-//! For full preemptive scheduling we use the PendSV exception. The
-//! `__caplet_switch` function only does the register shuffle; PendSV is
-//! pended by the scheduler when it wants a switch to happen at the
-//! next convenient boundary.
+//! For full preemptive scheduling we use the PendSV exception.  The
+//! hardware has already pushed the exception frame
+//! (`r0-r3, r12, lr, pc, xPSR`) onto the task's *process* stack when the
+//! handler runs, so `__caplet_switch` must operate on `PSP`, not on the
+//! handler stack (`MSP`).  After restoring `r4-r11` it performs an
+//! exception return with `EXC_RETURN = 0xFFFFFFFD`, which makes the
+//! hardware unstack the new task's frame from `PSP`.
 
 extern crate alloc;
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// Task context for context switching.
 ///
@@ -46,7 +50,7 @@ pub struct TaskContext {
     pub r3: u32,
     /// R12
     pub r12: u32,
-    /// LR — link register on entry
+    /// LR — link register restored into the task (not EXC_RETURN)
     pub lr: u32,
     /// PC — return address
     pub pc: u32,
@@ -57,7 +61,7 @@ pub struct TaskContext {
 impl TaskContext {
     /// Create a new context for a task. `sp` is the initial stack
     /// pointer (lowest free address — Cortex-M grows down).
-    pub fn new(entry: u32, sp: u32, arg: u32) -> Self {
+    pub fn new(entry: u32, _sp: u32, arg: u32) -> Self {
         Self {
             r4: 0,
             r5: 0,
@@ -72,7 +76,9 @@ impl TaskContext {
             r2: 0,
             r3: 0,
             r12: 0,
-            lr: 0xFFFF_FFFD, // EXC_RETURN: thread mode, PSP
+            // This is the *thread* LR value.  EXC_RETURN is supplied by
+            // the switch routine itself when it executes `bx lr`.
+            lr: 0,
             pc: entry,
             xpsr: 0x0100_0000, // Thumb bit set
         }
@@ -88,34 +94,35 @@ impl TaskContext {
 /// Switch context from `old_sp` to `new_sp`.
 ///
 /// On entry, r0 points to the old PSP slot, r1 points to the new PSP
-/// slot. The routine saves r4-r11 on the old stack, switches PSP, and
-/// restores r4-r11 from the new stack.
+/// slot. The routine saves r4-r11 on the old process stack, switches
+/// PSP, restores r4-r11 from the new process stack, and performs an
+/// exception return into the new task.
 ///
-/// After the call returns, the processor is running with the new task's
-/// stack and registers.
+/// # Safety
+///
+/// This routine must only be called from handler mode while the
+/// outgoing task's exception frame is on `PSP` (i.e. from PendSV or
+/// another exception taken from thread mode with `SPSEL = 1`).  Both
+/// pointers must be valid, aligned, and point to writable storage.
 #[cfg(target_arch = "arm")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __caplet_switch(old_sp: *mut u32, new_sp: *mut u32) {
+pub unsafe extern "C" fn __caplet_switch(old_sp: *mut usize, new_sp: *mut usize) {
     unsafe {
         core::arch::asm!(
-            // Save callee-saved regs on the old stack. We push them in
-            // the order TaskContext expects: r4..r11 then later r0..r3
-            // and the hardware frame (already on the stack on first
-            // call). For an initial task, the hardware frame is built
-            // by `initial_context` below.
-            "push {{r4-r11}}",
-            // Store the adjusted old PSP back to the slot.
-            "str sp, [{r0}]",
-            // Load the new PSP.
-            "mov sp, {r1}",
-            // Restore callee-saved registers from the new stack.
-            "pop {{r4-r11}}",
-            // For a returning task the hardware frame is at the top of
-            // the new stack; this routine returns to it. We arrange the
-            // stack so that a normal return pops the hardware frame.
+            // The handler runs on MSP; the task frame lives on PSP.
+            "mrs r2, psp",
+            "stmdb r2!, {{r4-r11}}",
+            "str r2, [{0}]",
+            "ldr r2, [{1}]",
+            "msr psp, r2",
+            "ldmia r2!, {{r4-r11}}",
+            "msr psp, r2",
+            // Exception return: thread mode, non-secure/secure agnostic
+            // basic frame, process stack pointer.
+            "ldr lr, =0xFFFFFFFD",
             "bx lr",
-            r0 = in(reg) old_sp,
-            r1 = in(reg) new_sp,
+            in(reg) old_sp,
+            in(reg) new_sp,
             options(noreturn)
         );
     }
@@ -138,23 +145,39 @@ pub fn build_initial_stack(stack_top: *mut u32, entry: u32, arg: u32) -> *mut u3
     // Move p down past the hardware frame (8 words).
     unsafe {
         // Hardware frame (in pop order so push builds it in reverse)
-        p = p.offset(-1); *p = 0x0100_0000;                // xpsr (Thumb)
-        p = p.offset(-1); *p = entry;                       // pc
-        p = p.offset(-1); *p = 0xFFFF_FFFD;                // lr (EXC_RETURN)
-        p = p.offset(-1); *p = 0;                           // r12
-        p = p.offset(-1); *p = 0;                           // r3
-        p = p.offset(-1); *p = 0;                           // r2
-        p = p.offset(-1); *p = 0;                           // r1
-        p = p.offset(-1); *p = arg;                         // r0
-        // Callee-saved frame (pop order = r4..r11)
-        p = p.offset(-1); *p = 0;                           // r11
-        p = p.offset(-1); *p = 0;                           // r10
-        p = p.offset(-1); *p = 0;                           // r9
-        p = p.offset(-1); *p = 0;                           // r8
-        p = p.offset(-1); *p = 0;                           // r7
-        p = p.offset(-1); *p = 0;                           // r6
-        p = p.offset(-1); *p = 0;                           // r5
-        p = p.offset(-1); *p = 0;                           // r4
+        p = p.offset(-1);
+        *p = 0x0100_0000; // xpsr (Thumb)
+        p = p.offset(-1);
+        *p = entry; // pc
+        p = p.offset(-1);
+        *p = 0; // lr (thread)
+        p = p.offset(-1);
+        *p = 0; // r12
+        p = p.offset(-1);
+        *p = 0; // r3
+        p = p.offset(-1);
+        *p = 0; // r2
+        p = p.offset(-1);
+        *p = 0; // r1
+        p = p.offset(-1);
+        *p = arg; // r0
+                  // Callee-saved frame (pop order = r4..r11)
+        p = p.offset(-1);
+        *p = 0; // r11
+        p = p.offset(-1);
+        *p = 0; // r10
+        p = p.offset(-1);
+        *p = 0; // r9
+        p = p.offset(-1);
+        *p = 0; // r8
+        p = p.offset(-1);
+        *p = 0; // r7
+        p = p.offset(-1);
+        *p = 0; // r6
+        p = p.offset(-1);
+        *p = 0; // r5
+        p = p.offset(-1);
+        *p = 0; // r4
     }
     p
 }
@@ -165,10 +188,14 @@ pub fn build_initial_stack(stack_top: *mut u32, entry: u32, arg: u32) -> *mut u3
 /// the stack.
 #[cfg(target_arch = "arm")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn __caplet_start_first(new_sp: *mut u32) -> ! {
+pub unsafe extern "C" fn __caplet_start_first(new_sp: *mut usize) -> ! {
     unsafe {
         core::arch::asm!(
-            "mov sp, {0}",
+            // Select PSP and make it the active stack.
+            "msr psp, {0}",
+            "movs r0, #2",
+            "msr control, r0",
+            "isb",
             // Pop callee-saved.
             "pop {{r4-r11}}",
             // Pop the hardware frame by hand and jump to PC.
@@ -194,13 +221,19 @@ pub unsafe extern "C" fn __caplet_start_first(new_sp: *mut u32) -> ! {
 pub fn pend_pendsv() {
     unsafe {
         core::arch::asm!(
+            // Preserve the caller's PRIMASK instead of unconditionally
+            // enabling interrupts on the way out.
+            "mrs r2, primask",
             "cpsid i",
             "ldr r0, =0xE000ED04",      // ICSR
             "movs r1, #0x10000000",     // PENDSVSET
-            "str r1, [r0, #4]",
-            "cpsie i",
+            "str r1, [r0]",
             "dsb",
             "isb",
+            "msr primask, r2",
+            out("r0") _,
+            out("r1") _,
+            out("r2") _,
             options(nostack, preserves_flags)
         );
     }
@@ -240,6 +273,11 @@ pub fn read_psp() -> u32 {
 }
 
 /// Set the process stack pointer (host stub).
+///
+/// # Safety
+///
+/// The host stub performs no write, but the signature matches the
+/// architectural operation and callers must still supply a valid PSP.
 #[cfg(not(target_arch = "arm"))]
 #[inline(always)]
 pub unsafe fn set_psp(_sp: u32) {}
@@ -261,17 +299,77 @@ unsafe impl Send for PspSlot {}
 impl PspSlot {
     /// Create a new slot pointing at the given location.
     pub const fn new(ptr: *mut u32) -> Self {
-        Self { inner: UnsafeCell::new(ptr) }
+        Self {
+            inner: UnsafeCell::new(ptr),
+        }
     }
 
     /// Set the underlying pointer.
     pub fn set(&self, ptr: *mut u32) {
-        unsafe { *self.inner.get() = ptr; }
+        unsafe {
+            *self.inner.get() = ptr;
+        }
     }
 
     /// Get the underlying pointer.
     pub fn get(&self) -> *mut u32 {
         unsafe { *self.inner.get() }
+    }
+}
+
+/// A handler invoked from the architecture exception vector.
+///
+/// The routine runs in handler mode with the interrupted task's frame
+/// on `PSP`.  It may call [`__caplet_switch`]; when it returns normally
+/// the interrupted task is resumed.
+pub type ExceptionHook = unsafe extern "C" fn();
+
+static PENDSV_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static SVC_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the handler called by the PendSV vector.  The scheduler
+/// installs its pick-next-task routine here during boot.
+pub fn set_pendsv_handler(hook: Option<ExceptionHook>) {
+    let ptr = match hook {
+        Some(f) => f as *mut (),
+        None => core::ptr::null_mut(),
+    };
+    PENDSV_HOOK.store(ptr, Ordering::Release);
+}
+
+/// Install the handler called by the SVCall vector.  The kernel's
+/// syscall entry point is installed here once, after the heap and the
+/// kernel object are ready.
+pub fn set_svc_handler(hook: Option<ExceptionHook>) {
+    let ptr = match hook {
+        Some(f) => f as *mut (),
+        None => core::ptr::null_mut(),
+    };
+    SVC_HOOK.store(ptr, Ordering::Release);
+}
+
+/// PendSV vector entry point.  A board's vector table may reference
+/// this symbol directly, or Cortex-M-RT's weak `PendSV` is overridden
+/// by this strong definition.
+#[cfg(all(target_arch = "arm", not(test)))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PendSV() {
+    let p = PENDSV_HOOK.load(Ordering::Acquire);
+    if !p.is_null() {
+        let hook: ExceptionHook = unsafe { core::mem::transmute(p) };
+        unsafe { hook() };
+    }
+}
+
+/// SVCall vector entry point.  The hook is responsible for decoding
+/// the SVC immediate and dispatching the syscall.
+#[cfg(all(target_arch = "arm", not(test)))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn SVCall() {
+    let p = SVC_HOOK.load(Ordering::Acquire);
+    if !p.is_null() {
+        let hook: ExceptionHook = unsafe { core::mem::transmute(p) };
+        unsafe { hook() };
     }
 }
 
@@ -289,23 +387,27 @@ mod tests {
         let p = build_initial_stack(top, 0xDEAD_BEEF, 0x1234_5678);
         // The bottom 8 words are r4..r11.
         unsafe {
-            assert_eq!(*p.offset(0), 0);  // r4
-            assert_eq!(*p.offset(1), 0);  // r5
-            assert_eq!(*p.offset(2), 0);  // r6
-            assert_eq!(*p.offset(3), 0);  // r7
-            assert_eq!(*p.offset(4), 0);  // r8
-            assert_eq!(*p.offset(5), 0);  // r9
-            assert_eq!(*p.offset(6), 0);  // r10
-            assert_eq!(*p.offset(7), 0);  // r11
-            // Hardware frame starts at offset 8 (low address).
-            assert_eq!(*p.offset(8), 0x1234_5678);   // r0
-            assert_eq!(*p.offset(9), 0);             // r1
-            assert_eq!(*p.offset(10), 0);            // r2
-            assert_eq!(*p.offset(11), 0);            // r3
-            assert_eq!(*p.offset(12), 0);            // r12
-            assert_eq!(*p.offset(13), 0xFFFF_FFFD);  // lr
-            assert_eq!(*p.offset(14), 0xDEAD_BEEF);   // pc
-            assert_eq!(*p.offset(15), 0x0100_0000);  // xpsr
+            assert_eq!(*p.offset(0), 0); // r4
+            assert_eq!(*p.offset(1), 0); // r5
+            assert_eq!(*p.offset(2), 0); // r6
+            assert_eq!(*p.offset(3), 0); // r7
+            assert_eq!(*p.offset(4), 0); // r8
+            assert_eq!(*p.offset(5), 0); // r9
+            assert_eq!(*p.offset(6), 0); // r10
+            assert_eq!(*p.offset(7), 0); // r11
+                                         // Hardware frame starts at offset 8 (low address).
+            assert_eq!(*p.offset(8), 0x1234_5678); // r0
+            assert_eq!(*p.offset(9), 0); // r1
+            assert_eq!(*p.offset(10), 0); // r2
+            assert_eq!(*p.offset(11), 0); // r3
+            assert_eq!(*p.offset(12), 0); // r12
+                                          // The hardware exception frame stores the *thread* LR.  The
+                                          // EXC_RETURN value is supplied by `__caplet_switch` itself
+                                          // (and `__caplet_start_first` jumps directly), so it must not
+                                          // be placed in the restored exception frame.
+            assert_eq!(*p.offset(13), 0); // thread lr
+            assert_eq!(*p.offset(14), 0xDEAD_BEEF); // pc
+            assert_eq!(*p.offset(15), 0x0100_0000); // xpsr
         }
     }
 }

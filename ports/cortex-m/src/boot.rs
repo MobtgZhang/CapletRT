@@ -35,7 +35,10 @@ pub fn cortex_m_boot() {
 
 /// Disable all interrupts
 fn disable_interrupts() {
-    // Would use inline assembly or cortex-m crate
+    #[cfg(target_arch = "arm")]
+    unsafe {
+        core::arch::asm!("cpsid i", "dsb", "isb", options(nostack, preserves_flags));
+    }
 }
 
 /// Enable the FPU (Cortex-M4 with FPU)
@@ -61,11 +64,29 @@ fn enable_fpu() {}
 
 /// Initialize memory
 fn init_memory() {
-    // Zero the BSS section
-    // In a real startup, this would be done in assembly
+    // Cortex-M-RT already clears BSS before `main`, but boards that
+    // provide their own reset vector call this function explicitly.
+    // Clearing an already-zero range is harmless and makes the port
+    // correct for both boot paths.
+    #[cfg(all(target_arch = "arm", not(test)))]
+    unsafe {
+        unsafe extern "C" {
+            static mut _sbss: u8;
+            static mut _ebss: u8;
+        }
+        let start = core::ptr::addr_of_mut!(_sbss) as *mut u32;
+        let end = core::ptr::addr_of_mut!(_ebss) as *mut u32;
+        let mut p = start;
+        while p < end {
+            core::ptr::write_volatile(p, 0);
+            p = p.add(1);
+        }
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Initialize the kernel
 pub fn kernel_init() {
-    // In actual implementation, this would call caplet_kernel::cap_init()
+    let _kernel = caplet_kernel::cap_init();
+    crate::tickless::install();
 }
