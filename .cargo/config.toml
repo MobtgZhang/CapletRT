@@ -2,10 +2,35 @@
 #
 # This configures the runners for different embedded targets.
 # With this config, `cargo run` will automatically start QEMU.
+#
+# IMPORTANT: there is deliberately NO `[build] target = ...` here.
+# A workspace-wide default target would force *every* member — including
+# host-only, std-linked crates such as `caplet-bench-harness` and
+# `tools/tickless_verify` — onto a bare-metal triple, where `std` does
+# not exist and the build fails with:
+#
+#   error[E0463]: can't find crate for `std`
+#
+# Embedded boards instead select their target in two supported ways:
+#   * a per-board `.cargo/config.toml` (e.g. boards/hello-qemu-cm3), or
+#   * an explicit `--target <triple>` on the command line / run script
+#     (this is what every tests/qemu-*/run.sh does).
+#
+# Host tooling and unit tests build with:
+#   cargo test  --target x86_64-pc-windows-msvc   (or the host triple)
 
 [target.thumbv7em-none-eabihf]
-# Cortex-M4 (MPS2-AN500 board in QEMU)
-runner = "qemu-system-arm -machine mps2-an500 -cpu cortex-m4 -nographic -semihosting-config enable=on,target=native -kernel"
+linker = "rust-lld"
+# Cortex-M4 (MPS2-AN386 is the QEMU machine that actually implements a
+# Cortex-M4; Renode uses the corresponding mps2-an500 platform description).
+runner = "qemu-system-arm -machine mps2-an386 -cpu cortex-m4 -nographic -semihosting-config enable=on,target=native -kernel"
+
+[target.thumbv7m-none-eabi]
+# Cortex-M3 (MPS2-AN385 board in QEMU). ARMv7-M is required rather than
+# ARMv6-M: `caplet-kernel` relies on compare-and-swap, which the
+# `atomics` target feature does not provide on ARMv6-M.
+runner = "qemu-system-arm -machine mps2-an385 -cpu cortex-m3 -nographic -semihosting-config enable=on,target=native -kernel"
+linker = "rust-lld"
 
 [target.thumbv6m-none-eabi]
 # Cortex-M3/M0+ (MPS2-AN385 board in QEMU)
@@ -13,16 +38,30 @@ runner = "qemu-system-arm -machine mps2-an385 -cpu cortex-m3 -nographic -semihos
 
 [target.thumbv7em-none-eabi]
 # Cortex-M4 without FPU
-runner = "qemu-system-arm -machine mps2-an500 -cpu cortex-m4 -nographic -semihosting-config enable=on,target=native -kernel"
+runner = "qemu-system-arm -machine mps2-an386 -cpu cortex-m4 -nographic -semihosting-config enable=on,target=native -kernel"
+
+[target.armv7a-none-eabihf]
+# Allwinner A20 (Cortex-A8, ARMv7-A) emulated by QEMU's vexpress-a9.
+# `-semihosting-config enable=on` is required for the SVC #0xAB /
+# BKPT #0xAB semihosting channel used by boards/hello-allwinner-a20-qemu.
+runner = "qemu-system-arm -machine vexpress-a9 -nographic -semihosting-config enable=on,target=native -kernel"
+linker = "rust-lld"
 
 [target.riscv32i-unknown-none-elf]
 # RISC-V 32-bit (QEMU virt machine)
 runner = "qemu-system-riscv32 -machine virt -nographic -kernel"
 
+[target.riscv32imac-unknown-none-elf]
+# RISC-V 32-bit with atomics (QEMU virt machine) — used by hello-riscv.
+runner = "qemu-system-riscv32 -machine virt -cpu rv32 -nographic -m 128M -bios none -kernel"
+linker = "rust-lld"
+
 [target.riscv64gc-unknown-none-elf]
 # RISC-V 64-bit (QEMU virt machine)
-runner = "qemu-system-riscv64 -machine virt -nographic -kernel"
+runner = "qemu-system-riscv64 -machine virt -cpu rv64 -nographic -m 128M -bios none -kernel"
+linker = "rust-lld"
 
 [target.aarch64-unknown-none]
 # ARM64 (QEMU virt machine)
-runner = "qemu-system-aarch64 -machine virt -cpu cortex-a53 -nographic -kernel"
+runner = "qemu-system-aarch64 -machine virt -cpu cortex-a53 -nographic -m 128M -kernel"
+linker = "rust-lld"

@@ -1,0 +1,1 @@
+// Empty build script to avoid linker script issues

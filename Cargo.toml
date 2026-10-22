@@ -10,7 +10,8 @@ resolver = "2"
 # Rust's `compare_exchange` requires the `atomics` target feature that
 # is not enabled for `thumbv6m` by default. Tracking item: enable a
 # critical-section-based `SpinLock` for CM3 in Phase 3.1.
-default-members = [
+default-members = [    "ports/allwinner",
+    "crates/caplet",
     "crates/caplet-macros",
     "crates/caplet-macros-exports",
     "crates/caplet-cap",
@@ -24,6 +25,7 @@ default-members = [
     "crates/caplet-hal-gd32",
     "crates/caplet-log",
     "crates/caplet-security",
+    "crates/caplet-crypto",
     "crates/caplet-budget",
     "crates/caplet-timer",
     "crates/caplet-fs",
@@ -34,6 +36,8 @@ default-members = [
     "crates/caplet-loader",
 ]
 members = [
+    "ports/allwinner",
+    "crates/caplet",
     "crates/caplet-macros",
     "crates/caplet-macros-exports",
     "crates/caplet-cap",
@@ -47,6 +51,7 @@ members = [
     "crates/caplet-hal-gd32",
     "crates/caplet-log",
     "crates/caplet-security",
+    "crates/caplet-crypto",
     "crates/caplet-budget",
     "crates/caplet-timer",
     "crates/caplet-fs",
@@ -55,20 +60,27 @@ members = [
     "crates/caplet-sensors",
     "crates/caplet-bench-harness",
     "crates/caplet-loader",
+    "tools/kani",
     "crates/caplet-ota",
     "tools/tickless_verify",
     "ports/cortex-m",
     "ports/cortex-a",
     "ports/riscv",
+    "ports/aarch64",
     "boards/hello-qemu-cm4",
     "boards/hello-qemu-cm4-fs",
+    "boards/hello-qemu-cm3",
     "boards/hello-dynamic-loader",
     "boards/nucleo-f446ze",
+    "boards/hello-nucleo-f446ze-qemu",
     "boards/industrial-demo",
     "boards/hello-riscv",
+    "boards/hello-aarch64-qemu",
     "boards/energy-meter",
     "boards/medical-device",
     "boards/automotive",
+    "boards/hello-allwinner-a20-qemu",
+    "boards/hello-cortex-a9",
 ]   # excluded from default-members: boards/hello-qemu-cm3 (CM3 atomics).
     # boards are built per-target via `tests/qemu-*/run.sh` and explicit
     # `cargo build -p <board> --target thumbv7em-none-eabihf`. The
@@ -94,19 +106,35 @@ hashbrown = "0.14"
 heapless = "0.8"
 libm = "0.2"
 lock_api = "0.4"
+linkme = "0.3"
 paste = "1.0"
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
 toml = "0.8"
+volatile-register = "0.2.2"
+aes = { version = "0.9", default-features = false }
+ed25519-dalek = { version = "3", default-features = false }
+sha2 = { version = "0.10", default-features = false }
 
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
-strip = true
+# NOTE: `strip = true` is deliberately NOT set.
+#
+# On bare-metal targets the ELF is the program image, not just a container
+# for a debugger. Stripping it removes the symbol table and section
+# metadata that `cortex-m-rt`'s linker script and the board build scripts
+# rely on (the reset vector, `Reset`, `__RESET_VECTOR`), which yields an
+# empty binary that boots into address 0 — QEMU reports a fatal `Lockup`
+# with `R15=00000000`. Keep symbols; disk size is irrelevant for an
+# embedded image of a few KiB.
+strip = false
 panic = "abort"
 
 [profile.dev]
 opt-level = 0
 debug = false
+
+
