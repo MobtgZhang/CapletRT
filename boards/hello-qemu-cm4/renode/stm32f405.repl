@@ -1,0 +1,2 @@
+// STM32F405 variant of the shared STM32F4 platform.
+using "stm32f4-base.repl"

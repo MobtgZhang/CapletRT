@@ -11,27 +11,35 @@ caplet-cortex-m = { path = "../../ports/cortex-m", features = ["cortex_m4"] }
 caplet-kernel = { path = "../../crates/caplet-kernel" }
 caplet-log = { path = "../../crates/caplet-log", features = ["semihosting"] }
 caplet-macros = { path = "../../crates/caplet-macros" }
-caplet-macros-exports = { path = "../../crates/caplet-macros-exports" }
+caplet-macros-exports = { path = "../../crates/caplet-macros-exports", features = ["cortex-m"] }
+caplet = { path = "../../crates/caplet", features = ["cortex-m"] }
 caplet-async = { path = "../../crates/caplet-async" }
 caplet-sync = { path = "../../crates/caplet-sync" }
 cortex-m-rt = { workspace = true }
 cortex-m-semihosting = { workspace = true }
+linkme = { workspace = true }
 
 [[bin]]
 name = "hello-qemu-cm4"
 path = "src/main.rs"
 required-features = ["target-none"]
+test = false
 
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
 
-# Tell cargo to run our build script before invoking rustc.
 [features]
-default = ["target-none"]
+# `default = []` keeps the embedded `[[bin]]` out of the host
+# `cargo build/test --workspace` flow; run scripts opt in explicitly
+# with `--features target-none`.
+default = []
 # The `target-none` feature is enabled by `tests/qemu-*/run.sh` when
 # building for an embedded target. With it disabled, the `[[bin]]`
 # is skipped so `cargo test --workspace` (host triple) does not try
 # to link cortex-m-rt's `Reset` symbol on x86_64.
 target-none = []
+# Build the deterministic tickless-idle diagnostic used by
+# `tools/tickless_verify.sh`.
+tickless-verify = []

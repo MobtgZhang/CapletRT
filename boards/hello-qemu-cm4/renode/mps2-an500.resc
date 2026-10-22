@@ -1,0 +1,13 @@
+# Renode boot script for the Cortex-M4 MPS2-AN500 board and the
+# industrial demos that share its memory map.
+#
+# tools/sim/run_renode.sh replaces @REPL@, @ELF@ and @OUT@ with absolute
+# paths before invoking Renode.  The Renode file backend requires the
+# leading '@' on path arguments.
+mach create "mps2-an500"
+machine LoadPlatformDescription @REPL@
+sysbus LoadELF @ELF@
+sysbus.cpu.semihosting.uart CreateFileBackend @OUT@
+start
+sleep 3
+quit

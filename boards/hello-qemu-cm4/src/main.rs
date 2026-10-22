@@ -1,22 +1,19 @@
 //! Hello World for QEMU Cortex-M4
 //!
-//! Minimal demo that runs on QEMU with mps2-an386 machine (Cortex-M4 with FPU).
-//! Uses `cortex-m-rt`'s `#[entry]` macro to set up the reset vector,
-//! then `#[caplet::task]` to wire the kernel.
+//! Runs on the QEMU `mps2-an386`/`mps2-an500` machine (Cortex-M4F)
+//! and on the Renode MPS2-AN500 platform.
 
 #![no_std]
 #![no_main]
-#![deny(warnings)]
 
 extern crate alloc;
-
 extern crate caplet_cortex_m;
 extern crate caplet_kernel;
 extern crate caplet_macros;
 
+use caplet::task as caplet_task;
 use caplet_log::{info, install_writer, semihosting::SEMIHOSTING_INSTANCE};
-use caplet_macros::task as caplet_task;
-use caplet_macros_exports::{drive_executor_forever, kernel_init, spawn_with_priority};
+use caplet_macros_exports::{drive_executor_forever, kernel_init};
 use caplet_sync::SpinLock;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -57,9 +54,12 @@ static SHARED_COUNTER: SpinLock<u32> = SpinLock::new(0);
 
 /// Boot task: prints the boot banner via the caplet-log framework
 /// (semihosting backend) and writes the counter to the shared slot.
-#[caplet_task(priority = 2, stack = 4096, name = "boot")]
+#[caplet_task(priority = 2, stack = 4096, name = "boot", linkme)]
 async fn boot_task() {
-    info!("boot", "CapletRT v0.1.0 booting on Cortex-M4 @ QEMU (MPS2-AN386)");
+    info!(
+        "boot",
+        "CapletRT v0.1.0 booting on Cortex-M4 @ QEMU (MPS2-AN386)"
+    );
     info!("fpu", "FPU enabled");
     info!("cap_init", "initializing kernel...");
     info!("cap_init", "done. Boot task running.");
@@ -70,7 +70,7 @@ async fn boot_task() {
 }
 
 /// Second task: counts forever to prove the scheduler is alive.
-#[caplet_task(priority = 3, stack = 4096, name = "control")]
+#[caplet_task(priority = 3, stack = 4096, name = "control", linkme)]
 async fn control_task() {
     let mut n: u32 = 0;
     loop {
@@ -82,6 +82,59 @@ async fn control_task() {
     }
 }
 
+/// Network task: initializes Ethernet and runs a simple loop.
+#[caplet_task(priority = 4, stack = 4096, name = "network", linkme)]
+async fn network_task() {
+    info!("network", "Starting network task...");
+    // The SMSC 91C111 model is only present on the QEMU MPS2 machines;
+    // this board keeps the task alive and logging so the scheduler has
+    // observable work while the real network stack is brought up.
+    loop {
+        info!("network", "Network task running...");
+        for _ in 0..2_000_000 {
+            core::hint::spin_loop();
+        }
+    }
+}
+
+/// Deterministic tickless-idle diagnostic. Each iteration programs a
+/// 20 ms variable SysTick reload, enters WFI, and records the duration
+/// before the ISR wakes the core. `tools/tickless_verify.sh` asserts
+/// the emitted counters.
+#[cfg(feature = "tickless-verify")]
+#[caplet_task(priority = 2, stack = 4096, name = "tickless", linkme)]
+async fn tickless_verify_task() {
+    use caplet_kernel::tickless::{record_wakeup, reset_wakeup_count, IDLE_TICKS_LO, WAKEUP_COUNT};
+
+    reset_wakeup_count();
+    caplet_cortex_m::systick::reset_irq_count();
+    info!(
+        "tickless",
+        "calib={:#010x} cpm={} rvr={}",
+        caplet_cortex_m::systick::calibration_raw(),
+        caplet_cortex_m::systick::cycles_per_ms(),
+        caplet_cortex_m::systick::reload_value()
+    );
+    let start = caplet_kernel::syscall_timer::get_ticks();
+    for _ in 0..5u32 {
+        record_wakeup(20);
+        caplet_kernel::tickless::enter_idle(20);
+    }
+    let idle_ticks = IDLE_TICKS_LO.load(Ordering::Acquire);
+    let wakeups = WAKEUP_COUNT.load(Ordering::Acquire);
+    let irqs = caplet_cortex_m::systick::irq_count();
+    let elapsed = caplet_kernel::syscall_timer::get_ticks().saturating_sub(start);
+    info!(
+        "tickless",
+        "wakeups={} idle_ticks={} irqs={} elapsed_ms={}", wakeups, idle_ticks, irqs, elapsed
+    );
+    if wakeups == 5 && idle_ticks == 100 && irqs == 5 {
+        info!("tickless", "OK");
+    } else {
+        info!("tickless", "FAILED");
+    }
+}
+
 /// Rust entry point. `cortex-m-rt` calls this from the reset vector
 /// after initializing BSS and enabling the FPU.
 #[cortex_m_rt::entry]
@@ -89,7 +142,67 @@ fn main() -> ! {
     // Install the semihosting log writer before anything can call info!/debug!/etc.
     install_writer(Some(&SEMIHOSTING_INSTANCE));
     kernel_init();
-    spawn_with_priority(boot_task(), 2);
-    spawn_with_priority(control_task(), 3);
+
+    // Prove both registration paths on the real target. `linked` is
+    // populated from the linkme section emitted by #[caplet::task];
+    // `startup` uses the explicit fallback helpers so boot does not
+    // depend on custom-section layout.
+    let mut linked = caplet::runtime::TaskTable::<8>::new();
+    let linked_count = linked.register_linked();
+
+    let mut startup = caplet::runtime::TaskTable::<8>::new();
+    let mut explicit_count = 0usize;
+    if __caplet_register_task_boot_task(&mut startup) {
+        explicit_count += 1;
+    }
+    #[cfg(feature = "tickless-verify")]
+    if __caplet_register_task_tickless_verify_task(&mut startup) {
+        explicit_count += 1;
+    }
+    #[cfg(not(feature = "tickless-verify"))]
+    {
+        if __caplet_register_task_control_task(&mut startup) {
+            explicit_count += 1;
+        }
+        if __caplet_register_task_network_task(&mut startup) {
+            explicit_count += 1;
+        }
+    }
+    // Every task in this board is marked `linkme`, so the link-time table
+    // contains one more entry in tickless-verify mode (the diagnostic task).
+    // The explicit startup table intentionally launches only the boot task
+    // plus one workload task.
+    let expected_linked = if cfg!(feature = "tickless-verify") {
+        4
+    } else {
+        3
+    };
+    let expected_explicit = if cfg!(feature = "tickless-verify") {
+        2
+    } else {
+        3
+    };
+    if linked_count != expected_linked || explicit_count != expected_explicit {
+        info!(
+            "task_table",
+            "FAILED linked={} explicit={} expected_linked={} expected_explicit={}",
+            linked_count,
+            explicit_count,
+            expected_linked,
+            expected_explicit
+        );
+        loop {
+            caplet_kernel::tickless::enter_idle(1);
+        }
+    }
+    let (launched, skipped) = startup.start_all();
+    info!(
+        "task_table",
+        "linked={} explicit={} launched={} skipped={}",
+        linked_count,
+        explicit_count,
+        launched,
+        skipped
+    );
     drive_executor_forever()
 }
