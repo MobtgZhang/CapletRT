@@ -1,161 +1,294 @@
 //! Firmware integrity and signature verification.
 //!
-//! Before loading a new firmware image, the updater must verify:
-//!   1. SHA-256 hash matches the value in the manifest header.
-//!   2. Ed25519 signature over the image is valid for a trusted key.
+//! A slot has the following fixed layout:
 //!
-//! This module provides [`Verifier`] which wraps both checks.
+//! ```text
+//! +0                  FirmwareHeader (64 bytes)
+//! +64                 firmware image (`header.image_len` bytes)
+//! ...                 unused erased space
+//! slot_size - 64      Ed25519 signature
+//! ```
+//!
+//! SHA-256 covers the image.  Ed25519 covers the serialized header followed
+//! by the image, so neither the version nor the image length or key id can be
+//! changed without invalidating the signature.
+
+extern crate alloc;
+
+use alloc::vec;
+use alloc::vec::Vec;
+use caplet_crypto::{ed25519_verify, sha256, ED25519_PUBLIC_KEY_LEN};
+use caplet_security::flash::FlashRegion;
+
+use crate::flash::{FlashIoError, FlashStorage};
+
+/// Serialized firmware header size.
+pub const HEADER_SIZE: usize = 64;
+/// Ed25519 signature trailer size.
+pub const SIGNATURE_SIZE: usize = 64;
+/// Minimum slot capacity for a header, empty image and signature.
+pub const MIN_SLOT_SIZE: usize = HEADER_SIZE + SIGNATURE_SIZE;
+/// Maximum number of trusted keys in a boot ROM trust store.
+pub const MAX_TRUSTED_KEYS: usize = 8;
 
 /// Errors returned by the verifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyError {
-    /// Hash mismatch — image corrupted.
-    HashMismatch,
-    /// Signature is invalid.
-    BadSignature,
-    /// No trusted key for this image's key ID.
-    UnknownKey,
-    /// Image is too small to be valid.
+    /// Header magic is not `FWR1`.
+    BadMagic,
+    /// Slot is too small for its header and signature.
     ImageTooSmall,
+    /// Declared image length exceeds the slot capacity.
+    ImageTooLarge,
+    /// SHA-256 of the image does not match the header.
+    HashMismatch,
+    /// Signature is invalid for the message.
+    BadSignature,
+    /// No trusted key has the requested id.
+    UnknownKey,
+    /// Flash read failed.
+    Flash(FlashIoError),
 }
 
-/// Firmware manifest header (stored at the start of the secondary slot).
-///
-/// This is read before loading the firmware to know where the
-/// verification metadata is located.
-#[derive(Debug, Clone, Copy)]
+impl From<FlashIoError> for VerifyError {
+    fn from(value: FlashIoError) -> Self {
+        VerifyError::Flash(value)
+    }
+}
+
+/// Firmware manifest header stored at the start of each firmware slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct FirmwareHeader {
-    /// Magic = 0x4657_5231 ('FWR1').
+    /// Magic = `0x4657_5231` (`FWR1`).
     pub magic: u32,
-    /// Semantic version major.minor.patch.
+    /// Packed semantic version (`major << 16 | minor << 8 | patch`).
     pub version: u32,
-    /// SHA-256 hash of the firmware image (bytes 32..end of image).
-    pub hash: [u8; 32],
-    /// Ed25519 public key id (looks up in TrustStore).
+    /// Number of image bytes following the header.
+    pub image_len: u32,
+    /// Id of the Ed25519 key that signed this firmware.
     pub public_key_id: u32,
-    /// Reserved for future use.
-    _reserved: [u8; 8],
+    /// SHA-256 of the image bytes only.
+    pub hash: [u8; 32],
+    /// Reserved; must be zero for version 1 firmware.
+    pub reserved: [u8; 16],
 }
 
 impl FirmwareHeader {
-    /// Magic value identifying a valid header.
+    /// Magic identifying the firmware header format.
     pub const HEADER_MAGIC: u32 = 0x4657_5231; // 'FWR1'
+    /// Offset of the image from the start of the slot.
+    pub const IMAGE_OFFSET: u32 = HEADER_SIZE as u32;
 
-    /// Check if this header is valid (correct magic).
-    pub fn is_valid(&self) -> bool {
+    /// Build a header for an image.
+    pub fn new(version: u32, image: &[u8], public_key_id: u32) -> Self {
+        Self {
+            magic: Self::HEADER_MAGIC,
+            version,
+            image_len: image.len() as u32,
+            public_key_id,
+            hash: sha256(image),
+            reserved: [0u8; 16],
+        }
+    }
+
+    /// Whether the magic is valid.
+    pub const fn is_valid(&self) -> bool {
         self.magic == Self::HEADER_MAGIC
     }
 
-    /// The offset from the slot start where the firmware image begins.
-    /// (After the header).
-    pub const IMAGE_OFFSET: u32 = 64; // size of FirmwareHeader
+    /// Serialize the header into exactly [`HEADER_SIZE`] bytes.
+    pub fn to_bytes(self) -> [u8; HEADER_SIZE] {
+        let mut out = [0u8; HEADER_SIZE];
+        out[0..4].copy_from_slice(&self.magic.to_le_bytes());
+        out[4..8].copy_from_slice(&self.version.to_le_bytes());
+        out[8..12].copy_from_slice(&self.image_len.to_le_bytes());
+        out[12..16].copy_from_slice(&self.public_key_id.to_le_bytes());
+        out[16..48].copy_from_slice(&self.hash);
+        out[48..64].copy_from_slice(&self.reserved);
+        out
+    }
+
+    /// Parse a header from at least [`HEADER_SIZE`] bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, VerifyError> {
+        if bytes.len() < HEADER_SIZE {
+            return Err(VerifyError::ImageTooSmall);
+        }
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&bytes[16..48]);
+        let mut reserved = [0u8; 16];
+        reserved.copy_from_slice(&bytes[48..64]);
+        let header = Self {
+            magic: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            version: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            image_len: u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+            public_key_id: u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+            hash,
+            reserved,
+        };
+        if !header.is_valid() {
+            return Err(VerifyError::BadMagic);
+        }
+        Ok(header)
+    }
 }
 
-/// Verifier — checks hash and signature before loading a new firmware.
+const _: () = assert!(core::mem::size_of::<FirmwareHeader>() == HEADER_SIZE);
+
+/// One trusted Ed25519 key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrustedKey {
+    /// Key identifier stored in firmware headers.
+    pub id: u32,
+    /// Raw Ed25519 public key.
+    pub public_key: [u8; ED25519_PUBLIC_KEY_LEN],
+}
+
+/// Fixed-capacity trust store suitable for a bootloader.
+#[derive(Debug, Clone)]
+pub struct TrustStore {
+    keys: [Option<TrustedKey>; MAX_TRUSTED_KEYS],
+}
+
+impl Default for TrustStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TrustStore {
+    /// Construct an empty trust store.
+    pub const fn new() -> Self {
+        Self {
+            keys: [None; MAX_TRUSTED_KEYS],
+        }
+    }
+
+    /// Add a trusted key.  Returns `false` when the store is full.
+    pub fn add(&mut self, id: u32, public_key: [u8; ED25519_PUBLIC_KEY_LEN]) -> bool {
+        let key = TrustedKey { id, public_key };
+        for slot in &mut self.keys {
+            if slot.is_none() {
+                *slot = Some(key);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Find a key by id.
+    pub fn get(&self, id: u32) -> Option<&TrustedKey> {
+        self.keys.iter().flatten().find(|key| key.id == id)
+    }
+
+    /// Number of installed keys.
+    pub fn len(&self) -> usize {
+        self.keys.iter().flatten().count()
+    }
+
+    /// Whether no keys are installed.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Firmware verifier.
 pub struct Verifier;
 
 impl Verifier {
-    /// Create a new verifier.
+    /// Construct a verifier.
     pub const fn new() -> Self {
         Self
     }
 
-    /// Verify the firmware image in `slot`.
+    /// Verify a complete in-memory slot.
     ///
-    /// `slot_base` — the physical base address of the inactive slot.
-    /// `slot_size` — total size of the slot in bytes.
-    /// `hash` — expected SHA-256 of the firmware (from the manifest).
-    /// `public_key_id` — trusted key to use for signature verification.
-    ///
-    /// Returns `Ok(header)` if both hash and signature are valid.
-    /// Returns `Err(VerifyError)` if verification fails.
-    pub fn verify(
+    /// `slot` must include the full reserved capacity of the slot because the
+    /// signature trailer is addressed from the end.
+    pub fn verify_slice(
         &self,
-        slot_base: u32,
-        slot_size: u32,
-        expected_hash: &[u8; 32],
-        public_key_id: u32,
+        slot: &[u8],
+        keys: &TrustStore,
     ) -> Result<FirmwareHeader, VerifyError> {
-        let header_ptr = slot_base as *const FirmwareHeader;
-        let header = unsafe { core::ptr::read_volatile(header_ptr) };
+        if slot.len() < MIN_SLOT_SIZE {
+            return Err(VerifyError::ImageTooSmall);
+        }
+        let header = FirmwareHeader::from_bytes(slot)?;
+        let image_len = header.image_len as usize;
+        if image_len > slot.len() - MIN_SLOT_SIZE {
+            return Err(VerifyError::ImageTooLarge);
+        }
+        let image = &slot[HEADER_SIZE..HEADER_SIZE + image_len];
+        let sig_start = slot.len() - SIGNATURE_SIZE;
+        let signature: &[u8; SIGNATURE_SIZE] = slot[sig_start..]
+            .try_into()
+            .map_err(|_| VerifyError::ImageTooSmall)?;
+        self.verify_parts(&header, image, signature, keys)
+    }
 
-        if !header.is_valid() {
+    /// Verify a slot directly from flash without trusting flash-mapped host
+    /// memory.  The only allocation is the contiguous signed message required
+    /// by Ed25519.
+    pub fn verify_flash<S: FlashStorage>(
+        &self,
+        flash: &mut S,
+        slot: FlashRegion,
+        keys: &TrustStore,
+    ) -> Result<FirmwareHeader, VerifyError> {
+        let capacity = slot
+            .end
+            .checked_sub(slot.start)
+            .and_then(|v| v.checked_add(1))
+            .ok_or(VerifyError::ImageTooSmall)? as usize;
+        if capacity < MIN_SLOT_SIZE {
             return Err(VerifyError::ImageTooSmall);
         }
 
-        // Verify SHA-256 hash of the firmware image.
-        let image_base = slot_base + FirmwareHeader::IMAGE_OFFSET;
-        let image_size = slot_size - FirmwareHeader::IMAGE_OFFSET;
-        let computed_hash = self.compute_sha256(image_base, image_size);
+        let mut header_bytes = [0u8; HEADER_SIZE];
+        flash.read(slot.start, &mut header_bytes)?;
+        let header = FirmwareHeader::from_bytes(&header_bytes)?;
+        let image_len = header.image_len as usize;
+        if image_len > capacity - MIN_SLOT_SIZE {
+            return Err(VerifyError::ImageTooLarge);
+        }
 
-        if &computed_hash != expected_hash {
+        let mut image = vec![0u8; image_len];
+        flash.read(slot.start + HEADER_SIZE as u32, &mut image)?;
+
+        let sig_addr = slot.end + 1 - SIGNATURE_SIZE as u32;
+        let mut signature = [0u8; SIGNATURE_SIZE];
+        flash.read(sig_addr, &mut signature)?;
+        self.verify_parts(&header, &image, &signature, keys)
+    }
+
+    /// Verify parsed header, image and signature.
+    pub fn verify_parts(
+        &self,
+        header: &FirmwareHeader,
+        image: &[u8],
+        signature: &[u8; SIGNATURE_SIZE],
+        keys: &TrustStore,
+    ) -> Result<FirmwareHeader, VerifyError> {
+        if !header.is_valid() {
+            return Err(VerifyError::BadMagic);
+        }
+        if header.image_len as usize != image.len() {
+            return Err(VerifyError::ImageTooLarge);
+        }
+        if sha256(image) != header.hash {
             return Err(VerifyError::HashMismatch);
         }
+        let key = keys
+            .get(header.public_key_id)
+            .ok_or(VerifyError::UnknownKey)?;
 
-        // Verify Ed25519 signature.
-        // The signature covers the header + image (everything in the slot).
-        let slot_ptr = slot_base as *const u8;
-        let slot_bytes = unsafe { core::slice::from_raw_parts(slot_ptr, slot_size as usize) };
-        let sig = self.read_signature(slot_base)?;
-
-        if !self.verify_signature(slot_bytes, &sig, public_key_id) {
+        let mut message = Vec::with_capacity(HEADER_SIZE + image.len());
+        message.extend_from_slice(&header.to_bytes());
+        message.extend_from_slice(image);
+        if !ed25519_verify(&key.public_key, &message, signature) {
             return Err(VerifyError::BadSignature);
         }
-
-        Ok(header)
-    }
-
-    /// Compute SHA-256 of a firmware image at a flash address.
-    ///
-    /// On embedded platforms this reads directly from flash MMIO.
-    /// The default implementation reads from memory (suitable for QEMU
-    /// where flash is memory-mapped).
-    fn compute_sha256(&self, base: u32, size: u32) -> [u8; 32] {
-        // Use the kernel's crypto syscall if available, otherwise
-        // fall back to a pure software SHA-256.
-        #[cfg(feature = "crypto")]
-        {
-            use core::convert::TryInto;
-            let src = base as *const u8;
-            let data = unsafe { core::slice::from_raw_parts(src, size as usize) };
-            sha256_software(data)
-        }
-        #[cfg(not(feature = "crypto"))]
-        {
-            let _ = (base, size);
-            [0u8; 32]
-        }
-    }
-
-    fn read_signature(&self, _slot_base: u32) -> Result<[u8; 64], VerifyError> {
-        // In a full implementation, the signature is stored after the
-        // image or in a separate metadata region. Here we return an
-        // error indicating that no signature is available without the
-        // crypto feature.
-        #[cfg(feature = "crypto")]
-        {
-            Err(VerifyError::UnknownKey)
-        }
-        #[cfg(not(feature = "crypto"))]
-        {
-            Err(VerifyError::UnknownKey)
-        }
-    }
-
-    fn verify_signature(&self, _data: &[u8], _sig: &[u8; 64], _key_id: u32) -> bool {
-        #[cfg(feature = "crypto")]
-        {
-            let _ = (_data, _sig, _key_id);
-            // In a full implementation, look up the key in the TrustStore
-            // and call ed25519_verify.
-            false
-        }
-        #[cfg(not(feature = "crypto"))]
-        {
-            let _ = (_data, _sig, _key_id);
-            false
-        }
+        Ok(*header)
     }
 }
 
@@ -165,74 +298,84 @@ impl Default for Verifier {
     }
 }
 
-// ── Pure-software SHA-256 (used when crypto feature is off) ─────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::Signer;
 
-/// Compute SHA-256 of a byte slice.
-#[cfg(feature = "crypto")]
-fn sha256_software(data: &[u8]) -> [u8; 32] {
-    use core::convert::TryInto;
-
-    // Constants.
-    let k: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-    ];
-
-    let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-    ];
-
-    let bit_len = (data.len() as u64) * 8;
-    let mut msg = data.to_vec();
-    msg.push(0x80);
-    while (msg.len() % 64) != 56 {
-        msg.push(0x00);
-    }
-    for &b in &bit_len.to_be_bytes() {
-        msg.push(b);
+    fn signed_slot(image: &[u8], version: u32) -> (Vec<u8>, TrustStore) {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let public = key.verifying_key().to_bytes();
+        let header = FirmwareHeader::new(version, image, 7);
+        let mut slot = vec![0xFFu8; 4096];
+        slot[..HEADER_SIZE].copy_from_slice(&header.to_bytes());
+        slot[HEADER_SIZE..HEADER_SIZE + image.len()].copy_from_slice(image);
+        let mut message = Vec::new();
+        message.extend_from_slice(&header.to_bytes());
+        message.extend_from_slice(image);
+        let sig = key.sign(&message).to_bytes();
+        let sig_start = slot.len() - SIGNATURE_SIZE;
+        slot[sig_start..].copy_from_slice(&sig);
+        let mut keys = TrustStore::new();
+        assert!(keys.add(7, public));
+        (slot, keys)
     }
 
-    for chunk in msg.chunks(64) {
-        let mut w = [0u32; 64];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([chunk[i*4], chunk[i*4+1], chunk[i*4+2], chunk[i*4+3]]);
-        }
-        for i in 16..64 {
-            let s0 = w[i-15].rotate_right(7) ^ w[i-15].rotate_right(18) ^ (w[i-15] >> 3);
-            let s1 = w[i-2].rotate_right(17) ^ w[i-2].rotate_right(19) ^ (w[i-2] >> 10);
-            w[i] = w[i-16].wrapping_add(s0).wrapping_add(w[i-7]).wrapping_add(s1);
-        }
-
-        let mut a = h[0]; let mut b = h[1]; let mut c = h[2]; let mut d = h[3];
-        let mut e = h[4]; let mut f = h[5]; let mut g = h[6]; let mut hh = h[7];
-
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ (!e & g);
-            let temp1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(k[i]).wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let temp2 = s0.wrapping_add(maj);
-            hh = g; g = f; f = e; e = d.wrapping_add(temp1);
-            d = c; c = b; b = a; a = temp1.wrapping_add(temp2);
-        }
-
-        h[0] = h[0].wrapping_add(a); h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c); h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e); h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g); h[7] = h[7].wrapping_add(hh);
+    #[test]
+    fn valid_slot_verifies() {
+        let (slot, keys) = signed_slot(b"firmware payload", 0x0001_0203);
+        let header = Verifier::new().verify_slice(&slot, &keys).unwrap();
+        assert_eq!(header.version, 0x0001_0203);
+        assert_eq!(header.image_len, 16);
     }
 
-    let mut result = [0u8; 32];
-    for (i, &hv) in h.iter().enumerate() {
-        result[i*4..(i+1)*4].copy_from_slice(&hv.to_be_bytes());
+    #[test]
+    fn image_tampering_is_rejected() {
+        let (mut slot, keys) = signed_slot(b"firmware payload", 1);
+        slot[HEADER_SIZE + 2] ^= 1;
+        assert_eq!(
+            Verifier::new().verify_slice(&slot, &keys),
+            Err(VerifyError::HashMismatch)
+        );
     }
-    result
+
+    #[test]
+    fn header_tampering_breaks_signature() {
+        let (mut slot, keys) = signed_slot(b"firmware payload", 1);
+        slot[4] ^= 1;
+        assert_eq!(
+            Verifier::new().verify_slice(&slot, &keys),
+            Err(VerifyError::BadSignature)
+        );
+    }
+
+    #[test]
+    fn unknown_key_is_rejected() {
+        let (slot, _) = signed_slot(b"firmware payload", 1);
+        let keys = TrustStore::new();
+        assert_eq!(
+            Verifier::new().verify_slice(&slot, &keys),
+            Err(VerifyError::UnknownKey)
+        );
+    }
+
+    #[test]
+    fn oversized_image_is_rejected() {
+        let (mut slot, keys) = signed_slot(b"x", 1);
+        slot[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(
+            Verifier::new().verify_slice(&slot, &keys),
+            Err(VerifyError::ImageTooLarge)
+        );
+    }
+
+    #[test]
+    fn header_has_stable_size_and_image_offset() {
+        assert_eq!(core::mem::size_of::<FirmwareHeader>(), HEADER_SIZE);
+        assert_eq!(FirmwareHeader::IMAGE_OFFSET as usize, HEADER_SIZE);
+        assert_eq!(
+            FirmwareHeader::new(1, b"abc", 2).to_bytes()[0..4],
+            FirmwareHeader::HEADER_MAGIC.to_le_bytes()
+        );
+    }
 }

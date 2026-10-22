@@ -8,12 +8,16 @@ authors.workspace = true
 
 [dependencies]
 caplet-security = { path = "../caplet-security" }
+caplet-crypto = { path = "../caplet-crypto" }
 caplet-cap = { path = "../caplet-cap" }
 caplet-sync = { path = "../caplet-sync" }
-caplet-loader = { path = "../caplet-loader", optional = true }
 
 [features]
 default = []
-# Enable Ed25519 + SHA-512 signature verification.
-# Requires caplet-loader with the `crypto` feature enabled.
-crypto = ["caplet-loader/crypto"]
+# Kept as a compatibility feature: Ed25519 and SHA-256 are always linked in
+# through rustcrypto/ed25519-dalek.  No firmware update path may silently
+# disable authentication.
+crypto = []
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
