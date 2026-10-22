@@ -11,11 +11,18 @@ extern crate alloc;
 use alloc::sync::Arc;
 use caplet_async::{Executor, Spawner as InnerSpawner};
 use caplet_sync::SpinLock;
+use caplet_task::Caplets;
+pub use caplet_task::{task_table, TaskDescriptor, TaskRegistration, TaskTable};
+use core::future::Future;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Re-export of the async Spawner so macro-generated code can reference
 /// it as `::caplet_macros_exports::Spawner`.
 pub type Spawner = InnerSpawner;
+
+/// Re-export of the service/capability container used by generated
+/// `#[caplet::main]` entry points.
+pub use caplet_task::Caplets as BootCaplets;
 
 /// Static flag tracking whether the kernel has been initialised.
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -31,18 +38,28 @@ pub fn kernel_init() {
     // The `caplet_cortex_m` port is the one that exposes the real
     // implementation; if it is not linked the weak symbol in the
     // kernel crate is used and the kernel busy-spins in the idle task.
-    #[cfg(target_arch = "arm")]
+    //
+    // The port is an optional dependency (`cortex-m` feature), so this
+    // call is gated on both the target architecture and the feature.
+    #[cfg(all(target_arch = "arm", feature = "cortex-m"))]
     caplet_cortex_m::tickless::install();
 }
 
 /// Start the kernel scheduler. Never returns.
 pub fn kernel_start() -> ! {
-    let kernel = unsafe { caplet_kernel::kernel::get_kernel() };
-    match kernel {
-        Some(k) => k.start(),
-        None => loop {
-            core::hint::spin_loop();
-        },
+    if SPAWNED_EXECUTOR.get().is_some() {
+        // The macro entry path is executor-driven. The kernel is still
+        // initialised (for syscalls, timers and resource tables), but
+        // the boot future and user tasks live in the executor.
+        drive_executor_forever()
+    } else {
+        match unsafe { caplet_kernel::kernel::get_kernel() } {
+            Some(kernel) => kernel.start(),
+            None => loop {
+                caplet_kernel::tickless::enter_idle(1);
+                caplet_sync::cpu_relax();
+            },
+        }
     }
 }
 
@@ -54,7 +71,9 @@ struct ExecutorCell {
 
 impl ExecutorCell {
     const fn new() -> Self {
-        Self { inner: SpinLock::new(None) }
+        Self {
+            inner: SpinLock::new(None),
+        }
     }
     fn replace(&self, v: Option<Arc<Executor>>) -> Option<Arc<Executor>> {
         let mut g = self.inner.lock();
@@ -72,24 +91,41 @@ static SPAWNED_EXECUTOR: ExecutorCell = ExecutorCell::new();
 /// Spawn the user's `main` as the boot task. `main` is the user's
 /// `fn main()` that the `#[caplet::main]` macro re-exported.
 pub fn spawn_main(main: fn() -> !) {
+    spawn_main_with(move |_spawner, _caps| async move { main() });
+}
+
+/// Spawn the macro-generated boot future with the runtime-owned
+/// `Spawner` and `Caplets` values.
+///
+/// The closure is invoked immediately so the future can capture both
+/// handles. It is generic over the future type rather than taking a
+/// boxed object, which keeps host and `no_std` board builds allocation
+/// behaviour identical.
+pub fn spawn_main_with<F, Fut>(boot: F)
+where
+    F: FnOnce(Spawner, Caplets) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
     let executor = Arc::new(Executor::new());
     let spawner = InnerSpawner::new(Arc::clone(&executor));
-    spawner.spawn_with(
-        async move {
-            main();
-        },
-        0,
-        4096,
-    );
+    let future = boot(spawner.clone(), Caplets::new());
+    spawner.spawn_with(future, 0, 4096);
     SPAWNED_EXECUTOR.replace(Some(executor));
 }
 
-/// Drain the spawned executor's task queue. Called by the scheduler
-/// loop.
-pub fn drive_executor() {
+/// Poll the boot executor once. Returns `true` when at least one
+/// ready task was polled.
+pub fn drive_executor_once() -> bool {
     if let Some(exec) = SPAWNED_EXECUTOR.get() {
-        exec.run_until_idle();
+        exec.run_once()
+    } else {
+        false
     }
+}
+
+/// Drain the spawned executor's currently-ready task queue.
+pub fn drive_executor() {
+    let _ = drive_executor_once();
 }
 
 /// Spawn an async function on the boot executor at the given priority.
@@ -113,25 +149,50 @@ where
 /// `fn main()` in board crates.
 pub fn drive_executor_forever() -> ! {
     loop {
-        drive_executor();
-        // Yield to any interrupt or WFI when idle.
+        if drive_executor_once() {
+            continue;
+        }
+        // No task is runnable. Give the platform a chance to enter a
+        // real low-power state; on Cortex-M this executes WFI and
+        // returns when an interrupt wakes us. Host builds use the
+        // no-op hook and fall through to a relaxed spin.
+        let deadline = caplet_kernel::tickless::compute_idle_deadline().unwrap_or(0);
+        let now = caplet_kernel::tickless::now();
+        let delta = caplet_kernel::main_task::compute_idle_delta(deadline, now);
+        caplet_kernel::tickless::record_wakeup(delta);
+        caplet_kernel::tickless::enter_idle(delta);
         caplet_sync::cpu_relax();
     }
 }
 
-/// Description of a task for kernel introspection.
-#[derive(Debug, Clone, Copy)]
-pub struct TaskDescriptor {
-    /// Task name
-    pub name: &'static str,
-    /// Priority (0..=31)
-    pub priority: u8,
-    /// Stack size in bytes
-    pub stack: usize,
-    /// Optional spawn pool
-    pub pool: Option<&'static str>,
-}
-
 /// Handle to a spawned task — re-exported from `caplet_async` so
 /// macro-generated code can reference `::caplet_macros_exports::TaskHandle`.
-pub use caplet_async::TaskHandle as TaskHandle;
+pub use caplet_async::TaskHandle;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    static BOOT_RUNS: AtomicUsize = AtomicUsize::new(0);
+    static SPAWNED_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn boot_future_and_spawned_task_are_driven() {
+        spawn_main_with(|spawner, _caps| async move {
+            BOOT_RUNS.fetch_add(1, Ordering::SeqCst);
+            spawner.spawn_with(
+                async {
+                    SPAWNED_RUNS.fetch_add(1, Ordering::SeqCst);
+                },
+                3,
+                1024,
+            );
+        });
+
+        drive_executor();
+        drive_executor();
+        assert_eq!(BOOT_RUNS.load(Ordering::SeqCst), 1);
+        assert_eq!(SPAWNED_RUNS.load(Ordering::SeqCst), 1);
+    }
+}

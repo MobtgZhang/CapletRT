@@ -3,8 +3,8 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
 
-mod task_macro;
 mod main_macro;
+mod task_macro;
 
 use proc_macro::TokenStream;
 

@@ -11,7 +11,14 @@ caplet-async = { path = "../caplet-async" }
 caplet-task = { path = "../caplet-task" }
 caplet-kernel = { path = "../caplet-kernel" }
 caplet-sync = { path = "../caplet-sync" }
-caplet-cortex-m = { path = "../../ports/cortex-m" }
+# The Cortex-M port is only meaningful for bare-metal ARM boards, so it is
+# optional. Host-side builds (this crate's own unit tests, which link
+# `std`) must not pull in its `#[panic_handler]`, or the link fails with
+# `E0152: found duplicate lang item 'panic_impl'`.
+caplet-cortex-m = { path = "../../ports/cortex-m", optional = true }
 
 [features]
 default = []
+# Enables the Cortex-M port together with its bare-metal panic handler.
+# Bare-metal boards enable this; host test builds leave it off.
+cortex-m = ["dep:caplet-cortex-m"]

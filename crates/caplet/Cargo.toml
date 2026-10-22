@@ -1,0 +1,20 @@
+[package]
+name = "caplet"
+description = "CapletRT umbrella crate: macros and runtime entry points"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+caplet-macros = { path = "../caplet-macros" }
+caplet-macros-exports = { path = "../caplet-macros-exports" }
+caplet-async = { path = "../caplet-async" }
+caplet-task = { path = "../caplet-task" }
+caplet-cap = { path = "../caplet-cap" }
+caplet-kernel = { path = "../caplet-kernel" }
+
+[features]
+default = []
+# Forward the Cortex-M boot/idle integration to the generated runtime.
+cortex-m = ["caplet-macros-exports/cortex-m"]
