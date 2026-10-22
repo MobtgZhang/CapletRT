@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "energy-meter"
 description = "Energy meter demo: power sampling, harmonic analysis, local storage, MQTT-SN"
 version.workspace = true
@@ -7,24 +7,45 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-caplet-cortex-m = { path = "../../ports/cortex-m", features = ["cortex_m4"] }
 caplet-kernel = { path = "../../crates/caplet-kernel" }
-caplet-log = { path = "../../crates/caplet-log", features = ["semihosting"] }
 caplet-macros = { path = "../../crates/caplet-macros" }
-caplet-macros-exports = { path = "../../crates/caplet-macros-exports" }
 caplet-async = { path = "../../crates/caplet-async" }
 caplet-sync = { path = "../../crates/caplet-sync" }
 caplet-sensors = { path = "../../crates/caplet-sensors" }
+caplet-mqttsn = { path = "../../crates/caplet-mqttsn" }
 heapless = "0.8"
 libm = "0.2"
+
+[target.'cfg(target_arch = "arm")'.dependencies]
+caplet-cortex-m = { path = "../../ports/cortex-m", features = ["cortex_m4"] }
+caplet-log = { path = "../../crates/caplet-log", features = ["semihosting"] }
+caplet-macros-exports = { path = "../../crates/caplet-macros-exports", features = ["cortex-m"] }
+caplet = { path = "../../crates/caplet", features = ["cortex-m"] }
 cortex-m-rt.workspace = true
 cortex-m-semihosting.workspace = true
 
+[target.'cfg(any(target_arch = "riscv32", target_arch = "riscv64"))'.dependencies]
+caplet-riscv = { path = "../../ports/riscv", default-features = false }
+caplet-log = { path = "../../crates/caplet-log" }
+caplet-macros-exports = { path = "../../crates/caplet-macros-exports" }
+caplet = { path = "../../crates/caplet", default-features = false }
+
+[[bin]]
+name = "energy-meter"
+path = "src/main.rs"
+required-features = ["target-none"]
+test = false
+
 [features]
+# See hello-qemu-cm4 for the rationale: gates the embedded `[[bin]]`
+# out of the host `cargo build/test --workspace` flow.
 default = []
 target-none = []
+rv32imac = ["caplet-riscv/rv32imac"]
+rv64gc = ["caplet-riscv/rv64gc"]
 
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
+

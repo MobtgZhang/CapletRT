@@ -1,0 +1,8 @@
+# Render-time placeholders are substituted by tools/sim/run_renode.sh.
+mach create "riscv-virt"
+machine LoadPlatformDescription @REPL@
+sysbus LoadELF @ELF@
+uart0 CreateFileBackend @OUT@
+start
+sleep 8
+quit

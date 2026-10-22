@@ -1,0 +1,8 @@
+# Renode boot script for energy-meter.
+mach create "energy-meter"
+machine LoadPlatformDescription @REPL@
+sysbus LoadELF @ELF@
+sysbus.cpu.semihosting.uart CreateFileBackend @OUT@
+start
+sleep 3
+quit
