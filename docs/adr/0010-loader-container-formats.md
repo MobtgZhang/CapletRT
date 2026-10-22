@@ -50,5 +50,7 @@ hand the bytes to the relocator + pool allocator.
 - The signature field of `.capp` keeps working in a host-only
   build (no signature required): the loader treats `flags &
   FLAG_SIGNED == 0` as "unsigned, accept".
-- Future expansion to RISC-V (M5) keeps both parsers; only the
-  `parse_elf` arch whitelist changes.
+- The `.capp` header is architecture-neutral, but the current ELF parser
+  accepts only 32-bit little-endian ARM (`EM_ARM`) and the relocator implements
+  only `R_ARM_RELATIVE`. Loading RISC-V or AArch64 ELF modules requires new
+  machine/relocation handling; the existing path is not silently reused.

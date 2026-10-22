@@ -36,8 +36,11 @@ via `standard_mount_table()` in `caplet-fs::boot`.
 - Users can swap backends without changing application code.
 - Capability revocation cascades: dropping the `Cap<MountPoint>`
   invalidates every outstanding file handle derived from it.
-- Backends are pluggable; LittleFS and FAT32 are stubs in M2
-  with full drivers planned.
+- Backends are pluggable. RAMFS is the development default; the LittleFS v2
+  backend uses a real serialized image through `littlefs-rust`, and the FAT32
+  backend parses BPB/FAT chains and 8.3/LFN directory entries. Both persistent
+  backends are RAM-image backed; board flash integration supplies the durable
+  block I/O layer.
 
 ## Alternatives considered
 

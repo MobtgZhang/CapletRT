@@ -36,8 +36,14 @@ queues, and `cpu.rs` records `MAX_CPUS` / `CpuId` constants.
   single core; the multi-core code is exercised only on the
   Cortex-A9 port and on the host `smp_smoke.rs` integration
   test.
-- `SmpScheduler::migrate` is the only mechanism for moving a
-  task to a specific CPU. Tasks themselves are not
-  CPU-affine; they can move at any `pick_next` boundary.
-- Future RISC-V SMP work will reuse `SmpScheduler` unchanged
-  — only the `Arch` impl needs replacing.
+- Tasks may be unpinned (`AffinityMask::ANY`) or pinned to one or more CPUs
+  with `AffinityMask`. `SmpScheduler::migrate` rejects a destination excluded
+  by the task's mask (`MigrateError::AffinityDenied`), and the load balancer
+  skips candidates whose mask does not admit the destination. It never
+  rewrites an affinity mask to make a migration succeed.
+- Unpinned tasks can move at an activation/`pick_next` boundary. The QEMU
+  Cortex-A9 SMP smoke test exercises secondary-core bring-up and per-core
+  workers at `-smp 2` and `-smp 4`.
+- The RISC-V port is single-hart today. Future RISC-V SMP work can reuse the
+  architecture-independent `SmpScheduler`; the RISC-V `Arch` implementation
+  still needs the equivalent IPI/startup path.

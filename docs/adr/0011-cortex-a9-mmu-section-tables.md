@@ -17,24 +17,25 @@ table and the `ports/cortex-a/src/mmu.rs` driver can map/unmap
 - The MMU abstraction lives in `ports/cortex-a/src/mmu.rs` and
   implements `caplet_kernel::arch::Arch` so it can be plugged
   into `Kernel::early_init`.
-- Map granularity is fixed at 1 MiB. Smaller regions are
-  emulated by mapping one section and tagging the unused bytes
-  as inaccessible via the page-permission bits in
-  `APagePerms`.
-- The TTBR0 (user CSpace) and the kernel half of the virtual
-  address space are managed by the kernel's
-  `MmuOps`; the `ports/cortex-a/src/mmu.rs::Mmu` is a
-  **Cortex-M-NoMmu fallback** for the meta-code (loader / cap
-  bookkeeping) that lives in the always-valid kernel half.
-- User code in the Cortex-M port keeps running on
-  `caplet_kernel::mmu::NoMmu` because there is no MMU to drive.
+- Map granularity is fixed at 1 MiB: both the virtual address and size passed
+  to `map_region` must be 1 MiB aligned. Sub-section protection is not
+  emulated; callers needing finer isolation must use a future 2-level table.
+- `APagePerms` encodes privilege/user read-write permissions and the
+  strongly-ordered device attribute directly in the section descriptor.
+- TTBR0 points at one process-wide, 16 KiB-aligned static L1 table. `enable`
+  programs TTBR0, puts domain 0 in client mode, invalidates the local TLB, and
+  enables the MMU, D-cache and I-cache. Secondary cores share the table but
+  each programs its own TTBR0/DACR/TLB/SCTLR state.
+- The Cortex-M port continues to use `caplet_kernel::mmu::NoMmu` because the
+  M-profile boards in this repository do not configure an MPU/MMU-backed
+  process address space.
 
 ## Consequences
 
-- A module loaded onto the Cortex-A9 board can ask for a
-  physical page via the new `ModulePool` allocator at boot.
-  Pages are mapped on-demand via `MapMemory` syscall.
+- A module loaded onto the Cortex-A9 board can request a mapped region through
+  the `MapMemory` syscall; the Cortex-A MMU applies it at MiB granularity, and
+  `UnmapMemory` clears the sections and invalidates the local TLB.
 - The compact L1 table keeps the boot path deterministic and
   avoids the cost of a "real" 2-level page table for v1.
-- Future RISC-V work (M5) will use Sv32 instead of L1 sections;
-  the `MmuOps` trait isolates this.
+- The RISC-V port uses Sv32/Sv39 instead of ARM L1 sections; the shared MMU
+  abstraction isolates the architecture-specific page-table format.
