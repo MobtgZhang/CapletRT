@@ -76,3 +76,31 @@ pub trait Interrupt {
     /// Clear pending flag
     fn clear_pending(&mut self) -> Result<(), Self::Error>;
 }
+
+/// A platform interrupt controller (NVIC, GIC, PLIC, ...).
+///
+/// `Interrupt` represents one interrupt line; this trait represents the
+/// controller that owns the line. Callbacks are registered as `FnMut` values
+/// and must remain valid for the lifetime of the registration, which is why
+/// implementations normally store them in a static/`'static` table.
+pub trait IrqHandler {
+    /// Error type returned by controller operations.
+    type Error;
+
+    /// Register the handler for `irq`, replacing any previous handler.
+    fn register<F>(&mut self, irq: u8, handler: F) -> Result<(), Self::Error>
+    where
+        F: FnMut() + Send + 'static;
+
+    /// Enable delivery of `irq`.
+    fn enable(&mut self, irq: u8) -> Result<(), Self::Error>;
+
+    /// Disable delivery of `irq` without removing its handler.
+    fn disable(&mut self, irq: u8) -> Result<(), Self::Error>;
+
+    /// Set the priority of `irq` in the controller's priority space.
+    fn set_priority(&mut self, irq: u8, priority: InterruptPriority) -> Result<(), Self::Error>;
+
+    /// Remove a previously registered handler.
+    fn unregister(&mut self, irq: u8) -> Result<(), Self::Error>;
+}

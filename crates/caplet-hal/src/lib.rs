@@ -8,24 +8,24 @@
 
 extern crate alloc;
 
-pub mod uart;
 pub mod gpio;
 pub mod i2c;
-pub mod spi;
-pub mod timer;
 pub mod interrupt;
 pub mod led;
-pub mod version_gate;
 pub mod phy;
+pub mod spi;
+pub mod timer;
+pub mod uart;
+pub mod version_gate;
 
-pub use uart::Uart;
-pub use gpio::{GpioPin, GpioPort, GpioMode, PinState};
-pub use i2c::I2c;
-pub use spi::Spi;
-pub use timer::Timer;
-pub use interrupt::Interrupt;
+pub use gpio::{GpioMode, GpioPin, GpioPort, IrqPin, OutputType, PinState, PullMode, Speed};
+pub use i2c::{I2c, I2cAddrMode, I2cConfig, I2cError, I2cSpeed};
+pub use interrupt::{Interrupt, InterruptPriority, InterruptTrigger, IrqHandler};
 pub use led::Led;
 pub use phy::{Duplex, LinkState, Mac, Phy, PhyError};
+pub use spi::{BitOrder, DataSize, Spi, SpiConfig, SpiMode, SpiModeId};
+pub use timer::{Timer, TimerChannel, TimerConfig, TimerMode, TimerRunMode};
+pub use uart::{Parity, StopBits, Uart, UartConfig, UartError};
 
 /// Error type for HAL operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +40,20 @@ pub enum HalError {
     NotReady,
     /// Disabled
     Disabled,
+    /// UART receiver overrun
+    Overrun,
+    /// UART framing error
+    Framing,
+    /// UART parity error
+    Parity,
+    /// I2C bus is busy
+    BusBusy,
+    /// I2C arbitration was lost
+    ArbitrationLost,
+    /// I2C target did not acknowledge
+    Nack,
+    /// The requested operation is not implemented by this driver
+    NotSupported,
 }
 
 impl core::fmt::Display for HalError {
@@ -50,6 +64,34 @@ impl core::fmt::Display for HalError {
             Self::HardwareError => write!(f, "hardware error"),
             Self::NotReady => write!(f, "not ready"),
             Self::Disabled => write!(f, "device disabled"),
+            Self::Overrun => write!(f, "receiver overrun"),
+            Self::Framing => write!(f, "framing error"),
+            Self::Parity => write!(f, "parity error"),
+            Self::BusBusy => write!(f, "bus busy"),
+            Self::ArbitrationLost => write!(f, "arbitration lost"),
+            Self::Nack => write!(f, "negative acknowledgement"),
+            Self::NotSupported => write!(f, "operation not supported"),
+        }
+    }
+}
+
+impl From<HalError> for caplet_cap::error::CapError {
+    fn from(error: HalError) -> Self {
+        use caplet_cap::error::CapError;
+
+        match error {
+            HalError::Timeout => CapError::Timeout,
+            HalError::InvalidArgument => CapError::Invalid,
+            HalError::HardwareError
+            | HalError::Overrun
+            | HalError::Framing
+            | HalError::Parity
+            | HalError::BusBusy
+            | HalError::ArbitrationLost
+            | HalError::Nack => CapError::Hardware,
+            HalError::NotReady | HalError::Disabled | HalError::NotSupported => {
+                CapError::Unavailable
+            }
         }
     }
 }

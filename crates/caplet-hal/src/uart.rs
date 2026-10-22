@@ -37,14 +37,17 @@ impl UartConfig {
     /// Set data bits
     pub fn with_data_bits(self, bits: u8) -> Self {
         Self {
-            data_bits: bits.min(8).max(5),
+            data_bits: bits.clamp(5, 8),
             ..self
         }
     }
 
     /// Set stop bits
     pub fn with_stop_bits(self, stop: StopBits) -> Self {
-        Self { stop_bits: stop, ..self }
+        Self {
+            stop_bits: stop,
+            ..self
+        }
     }
 
     /// Set parity
@@ -79,6 +82,34 @@ pub enum Parity {
     Odd,
 }
 
+/// UART receive error classification.
+///
+/// Drivers that can distinguish line errors should return these through
+/// [`HalError`](crate::HalError). The enum is also useful for board code that
+/// keeps its own diagnostics without depending on a concrete HAL driver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UartError {
+    /// The receive FIFO was overrun before software drained it.
+    Overrun,
+    /// The stop bit was not present at the expected position.
+    Framing,
+    /// The parity bit did not match the configured parity.
+    Parity,
+    /// No byte arrived before the requested deadline.
+    Timeout,
+}
+
+impl From<UartError> for crate::HalError {
+    fn from(error: UartError) -> Self {
+        match error {
+            UartError::Overrun => crate::HalError::Overrun,
+            UartError::Framing => crate::HalError::Framing,
+            UartError::Parity => crate::HalError::Parity,
+            UartError::Timeout => crate::HalError::Timeout,
+        }
+    }
+}
+
 /// UART trait for serial communication
 pub trait Uart {
     /// Error type
@@ -92,6 +123,20 @@ pub trait Uart {
 
     /// Read bytes from UART
     fn read(&mut self, buffer: &mut [u8]) -> Result<usize, Self::Error>;
+
+    /// Read bytes, waiting at most `timeout_us` microseconds for the first
+    /// byte.
+    ///
+    /// The HAL deliberately has no global clock. The default implementation
+    /// therefore performs a non-blocking drain: it returns whatever is
+    /// already available and `Ok(0)` when the receiver is empty. Drivers
+    /// with a timing source should override this method to enforce the
+    /// deadline. A driver that does wait must report expiry as its timeout
+    /// error (for example [`UartError::Timeout`] converted into
+    /// [`HalError::Timeout`](crate::HalError::Timeout)).
+    fn read_timeout(&mut self, buffer: &mut [u8], _timeout_us: u32) -> Result<usize, Self::Error> {
+        self.read(buffer)
+    }
 
     /// Check if there's data available
     fn available(&self) -> bool;
@@ -108,6 +153,16 @@ pub trait Uart {
             core::hint::spin_loop();
         }
         Ok(())
+    }
+
+    /// Wait until the transmitter is completely idle.
+    ///
+    /// This is the named form required by the HAL contract; it is kept
+    /// separate from [`Uart::flush`] so buffered drivers can implement a
+    /// stronger drain (FIFO plus shift register) without changing the
+    /// historical API.
+    fn flush_tx(&mut self) -> Result<(), Self::Error> {
+        self.flush()
     }
 
     /// Write all bytes, retrying on partial writes. Blocks until the

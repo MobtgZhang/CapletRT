@@ -9,6 +9,7 @@ authors.workspace = true
 [dependencies]
 embedded-hal.workspace = true
 embedded-io.workspace = true
+caplet-cap = { path = "../caplet-cap" }
 
 [features]
 default = []

@@ -35,6 +35,23 @@ pub struct I2cConfig {
     pub timeout_ms: u32,
 }
 
+/// I2C transfer error classification.
+///
+/// Drivers that expose more detail than the generic HAL error can return
+/// these values through [`HalError`](crate::HalError), which already provides
+/// the matching `BusBusy`, `ArbitrationLost`, and `Nack` variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum I2cError {
+    /// Another master currently owns the bus.
+    BusBusy,
+    /// Two masters started a transfer at the same time and this one lost.
+    ArbitrationLost,
+    /// The addressed target did not acknowledge a byte.
+    Nack,
+    /// The transfer did not complete within its configured timeout.
+    Timeout,
+}
+
 impl Default for I2cConfig {
     fn default() -> Self {
         Self {
@@ -61,8 +78,37 @@ pub trait I2c {
     fn read(&mut self, address: u16, buffer: &mut [u8]) -> Result<(), Self::Error>;
 
     /// Write and then read data
-    fn write_read(&mut self, address: u16, write: &[u8], read: &mut [u8]) -> Result<(), Self::Error>;
+    fn write_read(
+        &mut self,
+        address: u16,
+        write: &[u8],
+        read: &mut [u8],
+    ) -> Result<(), Self::Error>;
 
     /// Scan for devices on the bus
     fn scan(&self) -> Result<alloc::vec::Vec<u8>, Self::Error>;
+
+    /// Write using a DMA-capable backend when available.
+    ///
+    /// The default is a blocking transfer so every existing driver remains
+    /// correct. DMA-capable drivers should override it and only report
+    /// success after the completion interrupt has been observed.
+    fn write_dma(&mut self, address: u16, data: &[u8]) -> Result<(), Self::Error> {
+        self.write(address, data)
+    }
+
+    /// Read using a DMA-capable backend when available.
+    fn read_dma(&mut self, address: u16, buffer: &mut [u8]) -> Result<(), Self::Error> {
+        self.read(address, buffer)
+    }
+
+    /// Combined write/read transfer using the DMA path when available.
+    fn write_read_dma(
+        &mut self,
+        address: u16,
+        write: &[u8],
+        read: &mut [u8],
+    ) -> Result<(), Self::Error> {
+        self.write_read(address, write, read)
+    }
 }

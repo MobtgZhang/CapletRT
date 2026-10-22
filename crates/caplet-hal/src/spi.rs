@@ -49,6 +49,84 @@ impl Default for SpiMode {
     }
 }
 
+/// Explicit SPI mode number.
+///
+/// [`SpiMode`] carries the two electrical bits because that is what the
+/// hardware programs. This enum gives board code a single, exhaustive way to
+/// select one of the four standard modes without remembering the CPOL/CPHA
+/// combination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpiModeId {
+    /// CPOL=0, CPHA=0
+    Mode0,
+    /// CPOL=0, CPHA=1
+    Mode1,
+    /// CPOL=1, CPHA=0
+    Mode2,
+    /// CPOL=1, CPHA=1
+    Mode3,
+}
+
+impl From<SpiModeId> for SpiMode {
+    fn from(mode: SpiModeId) -> Self {
+        match mode {
+            SpiModeId::Mode0 => Self::mode0(),
+            SpiModeId::Mode1 => Self::mode1(),
+            SpiModeId::Mode2 => Self::mode2(),
+            SpiModeId::Mode3 => Self::mode3(),
+        }
+    }
+}
+
+impl SpiMode {
+    /// Return the standard mode number, if the polarity/phase pair is one of
+    /// the four valid combinations.
+    pub fn id(self) -> Option<SpiModeId> {
+        match (self.polarity, self.phase) {
+            (false, false) => Some(SpiModeId::Mode0),
+            (false, true) => Some(SpiModeId::Mode1),
+            (true, false) => Some(SpiModeId::Mode2),
+            (true, true) => Some(SpiModeId::Mode3),
+        }
+    }
+}
+
+/// Chip-select helpers.
+///
+/// `ActiveLow` is a zero-cost wrapper around a board-specific chip-select
+/// pin. It deliberately does not own the SPI bus: selecting a device and
+/// transferring bytes remain separate operations so a caller cannot leave CS
+/// asserted while another task uses the bus.
+pub mod cs {
+    /// A chip-select line whose asserted level is logic low.
+    #[derive(Debug)]
+    pub struct ActiveLow<C> {
+        inner: C,
+    }
+
+    impl<C> ActiveLow<C> {
+        /// Wrap a chip-select pin.
+        pub const fn new(inner: C) -> Self {
+            Self { inner }
+        }
+
+        /// Access the underlying pin.
+        pub fn inner(&self) -> &C {
+            &self.inner
+        }
+
+        /// Mutably access the underlying pin.
+        pub fn inner_mut(&mut self) -> &mut C {
+            &mut self.inner
+        }
+
+        /// Consume the wrapper and return the pin.
+        pub fn release(self) -> C {
+            self.inner
+        }
+    }
+}
+
 /// SPI data size
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataSize {

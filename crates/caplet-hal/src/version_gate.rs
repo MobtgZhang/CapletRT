@@ -15,16 +15,15 @@ pub const HAL_VERSION_MAJOR: u16 = 0;
 pub const HAL_VERSION_MINOR: u16 = 2;
 
 /// Patch version. Bumped on doc-only or internal-only changes.
-pub const HAL_VERSION_PATCH: u16 = 0;
+pub const HAL_VERSION_PATCH: u16 = 1;
 
-/// Packed SemVer `MMmmpp` (e.g. `0.2.0` → `0_002_000`).
-pub const HAL_VERSION_NUMBER: u32 =
-    (HAL_VERSION_MAJOR as u32) * 100_000
-        + (HAL_VERSION_MINOR as u32) * 1_000
-        + (HAL_VERSION_PATCH as u32);
+/// Packed SemVer `MMmmpp` (e.g. `0.2.1` → `0_002_001`).
+pub const HAL_VERSION_NUMBER: u32 = (HAL_VERSION_MAJOR as u32) * 100_000
+    + (HAL_VERSION_MINOR as u32) * 1_000
+    + (HAL_VERSION_PATCH as u32);
 
 /// Short git-style string for the version banner.
-pub const HAL_VERSION_STRING: &str = "0.2.0";
+pub const HAL_VERSION_STRING: &str = "0.2.1";
 
 /// Runtime accessor used by the boot banner.
 pub fn hal_version() -> Version {
@@ -84,6 +83,6 @@ mod tests {
 
     #[test]
     fn version_number_packs_correctly() {
-        assert_eq!(HAL_VERSION_NUMBER, 2_000);
+        assert_eq!(HAL_VERSION_NUMBER, 2_001);
     }
 }
