@@ -1,0 +1,22 @@
+// Renode model of QEMU's MPS2-AN385 board (Cortex-M3).
+//
+// The CapletRT Cortex-M boards print through ARM semihosting, so the
+// platform exposes Renode's SemihostingHandler and SemihostingUart.
+// The flash/RAM layout matches boards/hello-qemu-cm3/memory.x.
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m3"
+    nvic: nvic
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    systickFrequency: 25000000
+    IRQ -> cpu@0
+
+flash: Memory.MappedMemory @ sysbus 0x00000000
+    size: 0x00400000
+
+ram: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x00400000
+
+semihosting: CPU.SemihostingHandler @ cpu
+uart: UART.SemihostingUart @ semihosting

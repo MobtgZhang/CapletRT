@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "hello-qemu-cm3"
 description = "Hello World for QEMU Cortex-M3"
 version.workspace = true
@@ -8,14 +8,33 @@ authors.workspace = true
 
 [dependencies]
 caplet-cortex-m = { path = "../../ports/cortex-m", features = ["cortex_m3"] }
+caplet-kernel = { path = "../../crates/caplet-kernel" }
 caplet-log = { path = "../../crates/caplet-log", features = ["semihosting"] }
+caplet-macros = { path = "../../crates/caplet-macros" }
+caplet-macros-exports = { path = "../../crates/caplet-macros-exports", features = ["cortex-m"] }
+caplet = { path = "../../crates/caplet", features = ["cortex-m"] }
+caplet-async = { path = "../../crates/caplet-async" }
+caplet-sync = { path = "../../crates/caplet-sync" }
+cortex-m-rt = { workspace = true }
 cortex-m-semihosting = { workspace = true }
 
 [[bin]]
 name = "hello-qemu-cm3"
 path = "src/main.rs"
+required-features = ["target-none"]
+test = false
 
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
+
+[features]
+# `default = []` keeps the embedded `[[bin]]` out of the host
+# `cargo build/test --workspace` flow; run scripts opt in explicitly
+# with `--features target-none`.
+default = []
+# Enabled by `tests/qemu-cm3/run.sh` when building for thumbv7m-none-eabi.
+# With it disabled the embedded `[[bin]]` is skipped, so a host build never
+# tries to link cortex-m-rt's `Reset` symbol or a `#[panic_handler]`.
+target-none = []

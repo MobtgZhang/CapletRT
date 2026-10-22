@@ -1,0 +1,10 @@
+# Renode boot script for hello-qemu-cm3.
+# tools/sim/run_renode.sh substitutes @REPL@, @ELF@ and @OUT@ before
+# executing this file. The placeholders are intentionally absolute paths.
+mach create "mps2-an385"
+machine LoadPlatformDescription @REPL@
+sysbus LoadELF @ELF@
+sysbus.cpu.semihosting.uart CreateFileBackend @OUT@
+start
+sleep 3
+quit

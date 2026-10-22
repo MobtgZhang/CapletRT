@@ -1,2 +1,10 @@
-[target.thumbv6m-none-eabi]
+# QEMU MPS2-AN385 is a Cortex-M3 (ARMv7-M) machine, so the board builds
+# for `thumbv7m-none-eabi`. It must *not* build for `thumbv6m-none-eabi`
+# (ARMv6-M): `caplet-kernel` relies on compare-and-swap, which the
+# `atomics` target feature does not provide on ARMv6-M.
+[build]
+target = "thumbv7m-none-eabi"
+
+[target.thumbv7m-none-eabi]
 runner = "qemu-system-arm -machine mps2-an385 -cpu cortex-m3 -nographic -semihosting-config enable=on,target=native -kernel"
+
