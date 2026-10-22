@@ -18,10 +18,7 @@ pub struct SocketCap<'a, I: crate::interface::NetworkInterface + 'static> {
 impl<'a, I: crate::interface::NetworkInterface + 'static> SocketCap<'a, I> {
     /// Wrap an existing socket id. Does not check liveness;
     /// the caller is responsible for ensuring the id is valid.
-    pub fn wrap(
-        id: crate::socket::SocketId,
-        table: &'a SocketTable<I>,
-    ) -> Self {
+    pub fn wrap(id: crate::socket::SocketId, table: &'a SocketTable<I>) -> Self {
         Self { id, table }
     }
 
@@ -57,9 +54,8 @@ mod tests {
     use crate::socket::SocketKind;
 
     fn mk() -> (SocketTable<LoopbackInterface>, &'static LoopbackInterface) {
-        let lb: &'static LoopbackInterface = alloc::boxed::Box::leak(alloc::boxed::Box::new(
-            LoopbackInterface::new(),
-        ));
+        let lb: &'static LoopbackInterface =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(LoopbackInterface::new()));
         let t = SocketTable::new(4, lb);
         (t, lb)
     }

@@ -10,22 +10,25 @@
 
 #![no_std]
 #![deny(missing_docs)]
+// MSRV 1.75 predates `slice::as_chunks`; keep the portable form.
+#![allow(clippy::chunks_exact_to_as_chunks)]
 
 extern crate alloc;
 
 pub mod addr;
-pub mod interface;
-pub mod socket;
-pub mod syscall;
-pub mod proto;
-pub mod eth;
-pub mod icmp;
-pub mod tcp;
+pub mod arp;
+pub mod cap;
 pub mod dhcp;
 pub mod dns;
-pub mod cap;
+pub mod eth;
+pub mod icmp;
+pub mod interface;
+pub mod proto;
+pub mod socket;
+pub mod syscall;
+pub mod tcp;
 
 pub use addr::{Ipv4Addr, MacAddr, Port};
-pub use interface::{NetworkInterface, RxPacket, TxPacket};
+pub use interface::{NetError, NetworkInterface, RxPacket, TxPacket};
 pub use socket::{Socket, SocketError, SocketKind};
 pub use syscall::{syscall_net, NetSyscall};

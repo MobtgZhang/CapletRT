@@ -34,6 +34,21 @@ impl Ipv4Addr {
         Ipv4Addr(bytes)
     }
 
+    /// Construct from a slice. Returns `None` unless the slice is
+    /// exactly four bytes long.
+    pub fn from_slice(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != 4 {
+            return None;
+        }
+        Some(Self([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    /// Convert to host-order `u32` (the first octet is the most
+    /// significant byte).
+    pub const fn to_u32(self) -> u32 {
+        u32::from_be_bytes(self.0)
+    }
+
     /// Octets.
     pub fn octets(&self) -> &[u8; 4] {
         &self.0
@@ -48,6 +63,16 @@ impl Ipv4Addr {
     pub fn is_loopback(&self) -> bool {
         self.0[0] == 127
     }
+
+    /// Whether this is the unspecified address.
+    pub const fn is_unspecified(&self) -> bool {
+        self.0[0] == 0 && self.0[1] == 0 && self.0[2] == 0 && self.0[3] == 0
+    }
+
+    /// Whether this is the limited broadcast address.
+    pub const fn is_broadcast(&self) -> bool {
+        self.0[0] == 255 && self.0[1] == 255 && self.0[2] == 255 && self.0[3] == 255
+    }
 }
 
 /// Transport-layer port.
@@ -58,6 +83,11 @@ impl Port {
     /// Construct from raw `u16`.
     pub const fn new(p: u16) -> Self {
         Port(p)
+    }
+
+    /// Whether this is the wildcard / unbound port (zero).
+    pub const fn is_unspecified(self) -> bool {
+        self.0 == 0
     }
 }
 
@@ -80,5 +110,14 @@ mod tests {
     #[test]
     fn mac_broadcast() {
         assert_eq!(MacAddr::BROADCAST, MacAddr::new([0xff; 6]));
+    }
+
+    #[test]
+    fn ipv4_helpers() {
+        let a = Ipv4Addr::from_slice(&[192, 168, 1, 2]).unwrap();
+        assert_eq!(a.to_u32(), 0xc0a8_0102);
+        assert!(!a.is_unspecified());
+        assert!(Ipv4Addr::BROADCAST.is_broadcast());
+        assert!(Ipv4Addr::from_slice(&[1, 2, 3]).is_none());
     }
 }

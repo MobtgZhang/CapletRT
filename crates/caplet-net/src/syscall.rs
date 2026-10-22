@@ -1,32 +1,46 @@
-//! syscall_net — kernel entry point for network operations.
+//! `syscall_net` — kernel entry point for network operations.
 //!
-//! This module provides the syscall interface for network operations in the kernel.
-//! It bridges between the user-space network stack and the kernel's SocketTable.
-//!
-//! ## Implementation Status
-//!
-//! - Socket creation/binding/close: ✅ Implemented
-//! - UDP receive: ✅ Implemented
-//! - TCP state machine: ⚠️ Parsing only (see tcp.rs)
-//! - Send operation: ⚠️ Stub (see below)
-//! - DHCP/DNS: ⚠️ Partial (see dhcp.rs, dns.rs)
+//! The syscall layer is deliberately thin: capability/right checks and all
+//! socket state live in [`crate::socket`], while packet parsing lives in
+//! [`crate::proto`]. This module translates syscall tags and drains the
+//! interface receive queue.
 
-use crate::addr::{Ipv4Addr, Port};
-use crate::interface::{NetworkInterface, RxPacket};
+use crate::addr::{Ipv4Addr, MacAddr, Port};
+use crate::arp;
+use crate::eth;
+use crate::interface::{NetworkInterface, RxPacket, TxPacket};
 use crate::proto;
 use crate::socket::{SocketError, SocketId, SocketKind, SocketTable};
 
-/// Top-level net syscall tag.
+/// Top-level network syscall tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetSyscall {
     /// Open a new socket.
     Socket(SocketKind),
-    /// Bind a socket to a local port.
+    /// Bind a socket to a local port (zero requests an ephemeral port).
     Bind,
-    /// Send bytes over a socket.
+    /// Send on a connected UDP/TCP socket.
     Send,
+    /// Send to an explicit destination.
+    SendTo {
+        /// Destination IPv4 address.
+        addr: Ipv4Addr,
+        /// Destination port (ignored by raw sockets).
+        port: Port,
+    },
     /// Receive bytes from a socket.
     Recv,
+    /// Receive one datagram and its source address.
+    RecvFrom,
+    /// Connect a UDP socket or start a TCP handshake.
+    Connect {
+        /// Peer IPv4 address.
+        addr: Ipv4Addr,
+        /// Peer port.
+        port: Port,
+    },
+    /// Enter passive-open state on a TCP socket.
+    Listen,
     /// Close a socket.
     Close,
     /// Poll the interface for one incoming frame.
@@ -38,19 +52,30 @@ pub enum NetSyscall {
 }
 
 /// Result of [`syscall_net`].
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum NetResult {
     /// New socket id returned.
     NewSocket(SocketId),
     /// Number of bytes received / sent.
     Count(usize),
     /// Interface MAC.
-    Mac(crate::addr::MacAddr),
+    Mac(MacAddr),
     /// Interface IPv4 address.
     Ip(Ipv4Addr),
+    /// A selected local port (bind/listen).
+    Port(Port),
+    /// Datagram length and source.
+    Datagram {
+        /// Number of bytes copied into the caller's buffer.
+        len: usize,
+        /// Source IPv4 address.
+        src: Ipv4Addr,
+        /// Source port.
+        port: Port,
+    },
     /// No incoming packet right now.
     NoPacket,
-    /// Ok(()) — for bind / close.
+    /// `Ok(())` — for bind / close.
     Ok,
 }
 
@@ -63,91 +88,108 @@ pub fn syscall_net<I: NetworkInterface + 'static>(
     buf: &mut [u8],
 ) -> Result<NetResult, SocketError> {
     match op {
-        NetSyscall::Socket(k) => {
-            let id = table.open(k)?;
-            Ok(NetResult::NewSocket(id))
-        }
+        NetSyscall::Socket(kind) => Ok(NetResult::NewSocket(table.open(kind)?)),
         NetSyscall::Bind => {
             table.bind(sid, port)?;
             Ok(NetResult::Ok)
         }
-        NetSyscall::Recv => {
-            let n = table.recv(sid, buf)?;
-            Ok(NetResult::Count(n))
+        NetSyscall::Send => Ok(NetResult::Count(table.send(sid, buf)?)),
+        NetSyscall::SendTo { addr, port } => {
+            Ok(NetResult::Count(table.send_to(sid, addr, port, buf)?))
         }
+        NetSyscall::Recv => Ok(NetResult::Count(table.recv(sid, buf)?)),
+        NetSyscall::RecvFrom => {
+            let (len, src, port) = table.recv_from(sid, buf)?;
+            Ok(NetResult::Datagram { len, src, port })
+        }
+        NetSyscall::Connect { addr, port } => {
+            table.connect(sid, addr, port)?;
+            Ok(NetResult::Ok)
+        }
+        NetSyscall::Listen => Ok(NetResult::Port(table.listen(sid)?)),
         NetSyscall::Close => {
             table.close(sid)?;
             Ok(NetResult::Ok)
         }
         NetSyscall::PollRx => {
-            let rx = table
-                .iface
-                .poll_rx()
-                .map_err(|_| SocketError::NotReady)?;
-            if let Some(pkt) = rx {
-                handle_inbound(table, &pkt);
-                Ok(NetResult::Count(pkt.payload.len()))
-            } else {
-                Ok(NetResult::NoPacket)
+            let rx = table.iface.poll_rx().map_err(|_| SocketError::NotReady)?;
+            match rx {
+                Some(pkt) => {
+                    let count = handle_inbound(table, &pkt)?;
+                    Ok(NetResult::Count(count))
+                }
+                None => Ok(NetResult::NoPacket),
             }
         }
         NetSyscall::Mac => Ok(NetResult::Mac(table.iface.mac())),
         NetSyscall::Ip => Ok(NetResult::Ip(table.iface.ipv4())),
-        NetSyscall::Send => Ok(NetResult::Count(buf.len())),
     }
 }
 
-fn handle_inbound<I: NetworkInterface + 'static>(table: &SocketTable<I>, pkt: &RxPacket) {
-    // Strip the 14-byte Ethernet header (we assume
-    // `ethertype` is already in `pkt.ethertype`).
-    if pkt.ethertype != 0x0800 {
-        return;
-    }
-    if let Some(ip) = proto::parse_ipv4(&pkt.payload) {
-        let _ = proto::dispatch_inbound(table, &ip);
+/// Process one Ethernet frame. Returns the number of L3 bytes consumed.
+fn handle_inbound<I: NetworkInterface + 'static>(
+    table: &SocketTable<I>,
+    pkt: &RxPacket,
+) -> Result<usize, SocketError> {
+    match pkt.ethertype {
+        eth::ethertype::ARP => {
+            let Some(request) = arp::parse_arp(&pkt.payload) else {
+                return Ok(0);
+            };
+            table.neighbors.observe(&request);
+            let local_ip = table.iface.ipv4();
+            if request.operation == arp::OP_REQUEST
+                && !local_ip.is_unspecified()
+                && (request.target_ip == local_ip || request.target_ip.is_broadcast())
+            {
+                let reply = arp::build_arp(
+                    arp::OP_REPLY,
+                    table.iface.mac(),
+                    local_ip,
+                    request.sender_mac,
+                    request.sender_ip,
+                );
+                table
+                    .iface
+                    .transmit(TxPacket {
+                        dst: request.sender_mac,
+                        payload: reply,
+                        ethertype: Some(eth::ethertype::ARP),
+                    })
+                    .map_err(|_| SocketError::NotReady)?;
+            }
+            Ok(pkt.payload.len())
+        }
+        eth::ethertype::IPV4 => {
+            let Some(ip) = proto::parse_ipv4(&pkt.payload) else {
+                return Ok(0);
+            };
+            if !ip.src.is_unspecified() {
+                table.neighbors.insert(ip.src, pkt.src);
+            }
+            proto::dispatch_inbound(table, &ip, pkt.src)?;
+            Ok(ip.total_len)
+        }
+        _ => Ok(0),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::addr::MacAddr;
-    use crate::interface::{LoopbackInterface, RxPacket};
+    use crate::interface::LoopbackInterface;
 
     fn mk() -> (SocketTable<LoopbackInterface>, &'static LoopbackInterface) {
-        let lb: &'static LoopbackInterface = alloc::boxed::Box::leak(alloc::boxed::Box::new(
-            LoopbackInterface::new(),
-        ));
-        let t = SocketTable::new(4, lb);
-        (t, lb)
+        let iface: &'static LoopbackInterface =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(LoopbackInterface::new()));
+        iface.set_ipv4(Ipv4Addr::new([10, 0, 0, 2]));
+        (SocketTable::new(4, iface), iface)
     }
 
-    #[test]
-    fn syscall_open_then_close() {
-        let (t, _) = mk();
-        let id = match syscall_net(&t, NetSyscall::Socket(SocketKind::Udp), SocketId(0), Port::new(0), &mut []).unwrap() {
-            NetResult::NewSocket(id) => id,
-            _ => panic!("expected NewSocket"),
-        };
-        syscall_net(&t, NetSyscall::Close, id, Port::new(0), &mut []).unwrap();
-        assert!(t.is_empty());
-    }
-
-    #[test]
-    fn syscall_mac_and_ip() {
-        let (t, _) = mk();
-        match syscall_net(&t, NetSyscall::Mac, SocketId(0), Port::new(0), &mut []).unwrap() {
-            NetResult::Mac(m) => assert_eq!(m, t.iface.mac()),
-            _ => panic!("expected Mac"),
-        }
-    }
-
-    #[test]
-    fn syscall_poll_rx_dispatches_to_socket() {
-        let (t, lb) = mk();
-        let id = match syscall_net(
-            &t,
-            NetSyscall::Socket(SocketKind::Udp),
+    fn open(table: &SocketTable<LoopbackInterface>, kind: SocketKind) -> SocketId {
+        match syscall_net(
+            table,
+            NetSyscall::Socket(kind),
             SocketId(0),
             Port::new(0),
             &mut [],
@@ -155,33 +197,128 @@ mod tests {
         .unwrap()
         {
             NetResult::NewSocket(id) => id,
-            _ => panic!(),
-        };
-        syscall_net(&t, NetSyscall::Bind, id, Port::new(1234), &mut []).unwrap();
-        // Build an IP+UDP frame.
-        let mut ip = [0u8; 28];
-        ip[0] = 0x45;
-        ip[9] = 17; // UDP
-        ip[12..16].copy_from_slice(&[10, 0, 0, 1]);
-        ip[16..20].copy_from_slice(&[10, 0, 0, 2]);
-        ip[2..4].copy_from_slice(&(28u16).to_be_bytes());
-        // UDP header
-        ip[20..22].copy_from_slice(&5060u16.to_be_bytes());
-        ip[22..24].copy_from_slice(&1234u16.to_be_bytes());
-        ip[24..26].copy_from_slice(&(8u16).to_be_bytes());
-        let rx = RxPacket {
-            dst: lb.mac(),
-            src: MacAddr::new([0x02, 0, 0, 0, 0, 2]),
-            ethertype: 0x0800,
-            payload: ip.to_vec(),
-        };
-        lb.inject_rx(rx);
-        let _ = syscall_net(&t, NetSyscall::PollRx, SocketId(0), Port::new(0), &mut []).unwrap();
-        let mut buf = [0u8; 32];
-        let n = syscall_net(&t, NetSyscall::Recv, id, Port::new(0), &mut buf).unwrap();
-        match n {
-            NetResult::Count(n) => assert_eq!(n, 0),
-            _ => panic!("expected Count"),
+            other => panic!("expected NewSocket, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn syscall_open_then_close() {
+        let (table, _) = mk();
+        let id = open(&table, SocketKind::Udp);
+        syscall_net(&table, NetSyscall::Close, id, Port::new(0), &mut []).unwrap();
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn syscall_mac_and_ip() {
+        let (table, iface) = mk();
+        assert_eq!(
+            syscall_net(&table, NetSyscall::Mac, SocketId(0), Port::new(0), &mut []).unwrap(),
+            NetResult::Mac(iface.mac())
+        );
+        assert_eq!(
+            syscall_net(&table, NetSyscall::Ip, SocketId(0), Port::new(0), &mut []).unwrap(),
+            NetResult::Ip(Ipv4Addr::new([10, 0, 0, 2]))
+        );
+    }
+
+    #[test]
+    fn syscall_poll_rx_dispatches_to_socket() {
+        let (table, iface) = mk();
+        let id = open(&table, SocketKind::Udp);
+        syscall_net(&table, NetSyscall::Bind, id, Port::new(1234), &mut []).unwrap();
+        let src = Ipv4Addr::new([10, 0, 0, 1]);
+        let udp = proto::build_udp(src, iface.ipv4(), Port::new(5060), Port::new(1234), b"ok");
+        let ip = proto::build_ipv4(src, iface.ipv4(), proto::IpProto::Udp, &udp, 1, 64);
+        iface.inject_rx(RxPacket {
+            dst: iface.mac(),
+            src: MacAddr::new([0x02, 0, 0, 0, 0, 2]),
+            ethertype: eth::ethertype::IPV4,
+            payload: ip,
+        });
+        assert!(matches!(
+            syscall_net(
+                &table,
+                NetSyscall::PollRx,
+                SocketId(0),
+                Port::new(0),
+                &mut []
+            )
+            .unwrap(),
+            NetResult::Count(n) if n > 0
+        ));
+        let mut buf = [0u8; 32];
+        let result = syscall_net(&table, NetSyscall::RecvFrom, id, Port::new(0), &mut buf).unwrap();
+        assert_eq!(
+            result,
+            NetResult::Datagram {
+                len: 2,
+                src,
+                port: Port::new(5060)
+            }
+        );
+        assert_eq!(&buf[..2], b"ok");
+    }
+
+    #[test]
+    fn syscall_send_to_emits_valid_udp() {
+        let (table, iface) = mk();
+        let id = open(&table, SocketKind::Udp);
+        syscall_net(&table, NetSyscall::Bind, id, Port::new(5555), &mut []).unwrap();
+        let dst = Ipv4Addr::new([10, 0, 0, 1]);
+        let mut payload = *b"payload";
+        let result = syscall_net(
+            &table,
+            NetSyscall::SendTo {
+                addr: dst,
+                port: Port::new(9),
+            },
+            id,
+            Port::new(0),
+            &mut payload,
+        )
+        .unwrap();
+        assert_eq!(result, NetResult::Count(7));
+        let tx = iface.drain_tx();
+        assert_eq!(tx.len(), 1);
+        let packet = proto::parse_ipv4(&tx[0].payload).unwrap();
+        let udp = proto::parse_udp_checked(packet.payload, packet.src, packet.dst).unwrap();
+        assert_eq!(udp.payload, b"payload");
+    }
+
+    #[test]
+    fn arp_request_gets_reply_and_learns_neighbour() {
+        let (table, iface) = mk();
+        let peer_mac = MacAddr::new([0x02, 0, 0, 0, 0, 9]);
+        let peer_ip = Ipv4Addr::new([10, 0, 0, 1]);
+        let request = arp::build_arp(
+            arp::OP_REQUEST,
+            peer_mac,
+            peer_ip,
+            MacAddr::new([0; 6]),
+            iface.ipv4(),
+        );
+        iface.inject_rx(RxPacket {
+            dst: MacAddr::BROADCAST,
+            src: peer_mac,
+            ethertype: eth::ethertype::ARP,
+            payload: request,
+        });
+        syscall_net(
+            &table,
+            NetSyscall::PollRx,
+            SocketId(0),
+            Port::new(0),
+            &mut [],
+        )
+        .unwrap();
+        assert_eq!(table.neighbors.lookup(peer_ip), Some(peer_mac));
+        let tx = iface.drain_tx();
+        assert_eq!(tx.len(), 1);
+        assert_eq!(tx[0].ethertype, Some(eth::ethertype::ARP));
+        let reply = arp::parse_arp(&tx[0].payload).unwrap();
+        assert_eq!(reply.operation, arp::OP_REPLY);
+        assert_eq!(reply.sender_ip, iface.ipv4());
+        assert_eq!(reply.target_ip, peer_ip);
     }
 }
