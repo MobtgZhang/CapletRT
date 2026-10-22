@@ -25,11 +25,13 @@ const PLIC_BASE: usize = 0x0C00_0000;
 
 /// Number of interrupt sources on QEMU virt (matches QEMU default).
 const NUM_SOURCES: usize = 64;
-/// Number of contexts (harts × modes) on QEMU virt.
-const NUM_CONTEXTS: usize = 4;
-
-/// PLIC interrupt context: 0 = M-mode, 1 = S-mode (unused), 2 = S-mode hart 0.
-const CONTEXT_HART0_S: usize = 2;
+/// PLIC interrupt context for hart 0 supervisor mode.
+///
+/// QEMU `virt` exports two contexts per hart: context 0 is M-mode and
+/// context 1 is S-mode (verified from the generated device tree:
+/// `interrupts-extended = <cpu 11 cpu 9>`).  Renode's platform files in
+/// this repository model the same two-context layout.
+const CONTEXT_HART0_S: usize = 1;
 
 /// The PLIC device.
 pub struct Plic;
@@ -63,8 +65,7 @@ impl Plic {
     /// Call this in the PLIC external interrupt handler.
     /// Returns the IRQ number of the interrupt being claimed (0 = none).
     pub fn acknowledge() -> u32 {
-        let claim = Self::read32(Self::claim_addr(CONTEXT_HART0_S));
-        claim
+        Self::read32(Self::claim_addr(CONTEXT_HART0_S))
     }
 
     /// Mark interrupt `irq` as complete (end of interrupt handling).
@@ -83,7 +84,7 @@ impl Plic {
         }
         // Dispatch based on IRQ number.
         match irq {
-            #[cfg(feature = "uart")]
+            #[cfg(feature = "echo_uart")]
             10 => {
                 // UART0 interrupt — read RHR, handle receive.
                 crate::uart::Uart::handle_irq();
@@ -106,7 +107,7 @@ impl Plic {
     pub fn has_pending() -> bool {
         // Scan the pending register.
         let pending_base = PLIC_BASE + 0x001000;
-        let num_words = (NUM_SOURCES + 31) / 32;
+        let num_words = NUM_SOURCES.div_ceil(32);
         for i in 0..num_words {
             let val = Self::read32(pending_base + i * 4);
             if val != 0 {
@@ -120,17 +121,19 @@ impl Plic {
 
     /// Write priority for interrupt `source`.
     fn write_priority(source: u32, priority: u8) {
-        let offset = PLIC_BASE + 0x0 + (source as usize) * 4;
+        let offset = PLIC_BASE + (source as usize) * 4;
         // Priority is in bits [2:0]; mask to 7.
         Self::write32(offset, (priority & 7) as u32);
     }
 
     /// Write enable bit for `source` in the given `context`.
     fn write_enable(context: usize, source: u32, enabled: bool) {
-        let enable_offset = 0x002000 + context * 0x100;
+        // QEMU/Renode expose 64 sources per context, i.e. two 32-bit
+        // enable words, so the context stride is 0x80 bytes.
+        let enable_offset = 0x002000 + context * 0x80;
         let word = (source / 32) as usize;
         let bit = source % 32;
-        let reg = enable_offset + word * 4;
+        let reg = PLIC_BASE + enable_offset + word * 4;
         let current = Self::read32(reg);
         let new = if enabled {
             current | (1 << bit)

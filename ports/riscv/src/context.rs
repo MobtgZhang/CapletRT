@@ -1,36 +1,35 @@
-//! Context switching for RISC-V S-mode.
+//! Context switching and trap entry for RISC-V.
 //!
-//! The context layout is modeled after the AAPCS-RISC-V calling convention.
-//! We save/restore the 12 callee-saved registers (s0-s11) plus sepc and
-//! sstatus. The stack grows downward (toward lower addresses).
+//! The port supports both RV32 and RV64.  A cooperative context switch
+//! only has to preserve the integer callee-saved registers (`s0`-`s11`),
+//! the link register (`ra`) and the first argument register (`a0`, used
+//! to pass the task argument on first entry).  The saved frame is padded
+//! to a fixed 16-word size so it is 16-byte aligned on both XLENs:
 //!
-//! RISC-V S-mode register conventions:
-//!   s0-s11  : callee-saved (12 registers)
-//!   sepc    : saved program counter (after trap)
-//!   sstatus : saved status (SIE, SPIE, SPP, etc.)
-//!   sp      : stack pointer
+//! | word | RV32 offset | RV64 offset | register |
+//! |------|-------------|-------------|----------|
+//! | 0    | 0           | 0           | ra       |
+//! | 1..12| 4..48       | 8..96       | s0..s11  |
+//! | 13   | 52          | 104         | a0       |
+//! | 14   | 56          | 112         | reserved |
+//! | 15   | 60          | 120         | reserved |
 //!
-//! For an initial task, we build a fake trap frame on the stack:
-//!   sepc = entry point
-//!   sstatus.SIE = 0 (interrupts initially off)
-//!   s0-s11 = 0
-//!   sp = stack_top
+//! `__caplet_switch` uses a normal `ret`, not `sret`: it is called as an
+//! ordinary function from S-mode, so `sepc` has no meaningful value at
+//! that point.  Trap entry uses a separate frame and returns with
+//! `sret`, which is the architecturally correct path for asynchronous
+//! interrupts and exceptions.
 
-/// RISC-V task context structure.
-///
-/// This matches the layout pushed/popped by `__caplet_switch`:
-///   Offset  0: s0
-///   Offset  8: s1
-///   ...
-///   Offset 88: s11
-///   Offset 96: sepc
-///   Offset 104: sstatus
-///
-/// Total: 14 × 8 = 112 bytes.
+/// Number of `usize` words in a cooperative context frame.
+pub const CONTEXT_WORDS: usize = 16;
+
+/// RISC-V task context (cooperative switch frame).
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct TaskContext {
-    /// s0
+    /// Resume address (`ra`).
+    pub ra: usize,
+    /// s0 / fp
     pub s0: usize,
     /// s1
     pub s1: usize,
@@ -54,22 +53,19 @@ pub struct TaskContext {
     pub s10: usize,
     /// s11
     pub s11: usize,
-    /// Saved program counter (trap return address).
-    pub sepc: usize,
-    /// Saved sstatus CSR.
-    pub sstatus: usize,
+    /// First argument (`a0`).
+    pub a0: usize,
+    /// Reserved, keeps the frame 16-byte aligned on RV64.
+    pub reserved0: usize,
+    /// Reserved, keeps the frame 16-byte aligned on RV64.
+    pub reserved1: usize,
 }
 
 impl TaskContext {
-    /// Create a fresh task context for a new task.
-    ///
-    /// `entry` — the function pointer to jump to.
-    /// `sp`    — the top of the task's stack (highest address, aligned).
-    /// `arg`   — a user-defined argument passed in a0.
-    ///
-    /// Returns the sp value to store in the scheduler's slot.
-    pub fn new(entry: usize, sp: usize, _arg: usize) -> Self {
+    /// Create a fresh context that starts at `entry` with `arg` in `a0`.
+    pub fn new(entry: usize, _sp: usize, arg: usize) -> Self {
         Self {
+            ra: entry,
             s0: 0,
             s1: 0,
             s2: 0,
@@ -82,302 +78,439 @@ impl TaskContext {
             s9: 0,
             s10: 0,
             s11: 0,
-            // sepc is the PC to jump to when the task first runs.
-            sepc: entry,
-            // sstatus:
-            //   SIE = 0  (interrupts disabled on first entry)
-            //   SPIE = 1 (was in user mode, so restore SIE on exit)
-            //   spp = 0  (previous privilege = user — not used but set)
-            // In RISC-V sstatus bit layout (RV32):
-            //   bit 1  = SIE ( Supervisor Interrupt Enable)
-            //   bit 5  = SPIE (SIE before trap)
-            //   bit 8  = SPP (previous mode: 0=user, 1=supervisor)
-            sstatus: 0x40020, // SPIE=1, SPP=0, SIE=0
+            a0: arg,
+            reserved0: 0,
+            reserved1: 0,
         }
     }
 
-    /// Return the stack pointer from this context.
-    /// Note: the actual sp is tracked separately by the scheduler; this
-    /// is a placeholder.
-    pub fn stack_pointer(&self) -> usize {
+    /// The saved stack pointer is implicit: it is the address returned by
+    /// [`build_initial_stack`].
+    pub const fn stack_pointer(&self) -> usize {
         0
     }
 }
 
-/// Build the initial stack for the first task.
+/// Build an initial context at the top of `stack_top`.
 ///
-/// Stack layout (high → low addresses):
-///   sstatus (8B), sepc (8B), s11 (8B) .. s0 (8B)
-///   = 14 × 8 = 112 bytes total
-///
-/// Returns a pointer to the "context" in memory, which is the sp value
-/// to store in the scheduler's slot. The first context_switch call
-/// loads this sp as the new stack pointer.
+/// Returns the value the first switch must load into `sp`.  After the
+/// restore sequence the stack pointer equals `stack_top` (aligned down
+/// to 16 bytes), `a0` contains `arg`, and `ret` jumps to `entry`.
 pub fn build_initial_stack(stack_top: *mut usize, entry: usize, arg: usize) -> *mut usize {
-    let mut ctx = TaskContext::new(entry, stack_top as usize, arg);
-    // a0 is the first argument register.
-    ctx.s0 = arg;
-
-    let base = stack_top.wrapping_sub(14) as *mut TaskContext;
+    let ctx = TaskContext::new(entry, stack_top as usize, arg);
+    let frame_bytes = CONTEXT_WORDS * core::mem::size_of::<usize>();
+    let base = ((stack_top as usize).saturating_sub(frame_bytes)) & !15usize;
+    // SAFETY: the caller guarantees that `stack_top` points to at least
+    // one task stack and that the frame below it is writable.
     unsafe {
-        core::ptr::write_volatile(base, ctx);
+        core::ptr::write_volatile(base as *mut TaskContext, ctx);
     }
     base as *mut usize
 }
 
-/// Switch context from the task pointed to by `prev_ctx` to `next_ctx`.
-///
-/// `prev_ctx` points to a `*mut usize` slot where the current sp will be saved.
-/// `next_ctx` points to a `*const usize` where the new sp will be loaded.
-///
-/// On entry, both registers hold pointer values:
-///   a0 → prev slot, a1 → next slot
-///
-/// # Safety
-/// - `prev_ctx` must point to a valid slot initialized by a previous call
-///   to `build_initial_stack` or by a previous `__caplet_switch`.
-/// - `next_ctx` must point to a valid context built by `build_initial_stack`.
-/// - This function does not return normally (it executes sret to resume the
-///   next task's execution).
-#[cfg(target_arch = "riscv")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __caplet_switch(prev_ctx: *mut usize, next_ctx: *const usize) {
-    unsafe {
-        core::arch::asm!(
-            // Push current callee-saved registers onto the current stack.
-            "sd s0,  0(sp)",
-            "sd s1,  8(sp)",
-            "sd s2,  16(sp)",
-            "sd s3,  24(sp)",
-            "sd s4,  32(sp)",
-            "sd s5,  40(sp)",
-            "sd s6,  48(sp)",
-            "sd s7,  56(sp)",
-            "sd s8,  64(sp)",
-            "sd s9,  72(sp)",
-            "sd s10, 80(sp)",
-            "sd s11, 88(sp)",
-            // Save sepc (the PC to resume at).
-            "csrr t0, sepc",
-            "sd t0, 96(sp)",
-            // Save sstatus.
-            "csrr t0, sstatus",
-            "sd t0, 104(sp)",
-            // Store current sp to the prev slot.
-            "sd sp, 0(a0)",
-            // Load new sp from the next context pointer.
-            "ld sp, 0(a1)",
-            // Restore sstatus first (enables interrupts when appropriate).
-            "ld t0, 104(sp)",
-            "csrw sstatus, t0",
-            // Restore sepc.
-            "ld t0, 96(sp)",
-            "csrw sepc, t0",
-            // Restore callee-saved registers.
-            "ld s0,  0(sp)",
-            "ld s1,  8(sp)",
-            "ld s2,  16(sp)",
-            "ld s3,  24(sp)",
-            "ld s4,  32(sp)",
-            "ld s5,  40(sp)",
-            "ld s6,  48(sp)",
-            "ld s7,  56(sp)",
-            "ld s8,  64(sp)",
-            "ld s9,  72(sp)",
-            "ld s10, 80(sp)",
-            "ld s11, 88(sp)",
-            // Return via sret (jumps to restored sepc).
-            "sret",
-            inout("a0") prev_ctx,
-            inout("a1") next_ctx,
-            options(noreturn)
-        );
+// ---------------------------------------------------------------------
+// RV64 assembly
+// ---------------------------------------------------------------------
+
+#[cfg(all(target_arch = "riscv64", not(test)))]
+core::arch::global_asm!(
+    r#"
+    .section .text.__caplet_switch, "ax"
+    .global __caplet_switch
+    .type __caplet_switch, @function
+__caplet_switch:
+    addi sp, sp, -128
+    sd ra,    0(sp)
+    sd s0,    8(sp)
+    sd s1,   16(sp)
+    sd s2,   24(sp)
+    sd s3,   32(sp)
+    sd s4,   40(sp)
+    sd s5,   48(sp)
+    sd s6,   56(sp)
+    sd s7,   64(sp)
+    sd s8,   72(sp)
+    sd s9,   80(sp)
+    sd s10,  88(sp)
+    sd s11,  96(sp)
+    sd a0,  104(sp)
+    sd zero,112(sp)
+    sd zero,120(sp)
+    sd sp, 0(a0)
+    mv sp, a1
+    ld ra,    0(sp)
+    ld s0,    8(sp)
+    ld s1,   16(sp)
+    ld s2,   24(sp)
+    ld s3,   32(sp)
+    ld s4,   40(sp)
+    ld s5,   48(sp)
+    ld s6,   56(sp)
+    ld s7,   64(sp)
+    ld s8,   72(sp)
+    ld s9,   80(sp)
+    ld s10,  88(sp)
+    ld s11,  96(sp)
+    ld a0,  104(sp)
+    addi sp, sp, 128
+    ret
+    .size __caplet_switch, . - __caplet_switch
+
+    .section .text.__caplet_start_first, "ax"
+    .global __caplet_start_first
+    .type __caplet_start_first, @function
+__caplet_start_first:
+    mv sp, a0
+    ld ra,    0(sp)
+    ld s0,    8(sp)
+    ld s1,   16(sp)
+    ld s2,   24(sp)
+    ld s3,   32(sp)
+    ld s4,   40(sp)
+    ld s5,   48(sp)
+    ld s6,   56(sp)
+    ld s7,   64(sp)
+    ld s8,   72(sp)
+    ld s9,   80(sp)
+    ld s10,  88(sp)
+    ld s11,  96(sp)
+    ld a0,  104(sp)
+    addi sp, sp, 128
+    ret
+    .size __caplet_start_first, . - __caplet_start_first
+
+    .section .text.__riscv_trap_vector, "ax"
+    .balign 4
+    .global __riscv_trap_vector
+    .type __riscv_trap_vector, @function
+__riscv_trap_vector:
+    /* 36 words = 288 bytes (RV64), 16-byte aligned. */
+    addi sp, sp, -288
+    sd x1,    0(sp)
+    sd x3,    8(sp)
+    sd x4,   16(sp)
+    sd x5,   24(sp)
+    sd x6,   32(sp)
+    sd x7,   40(sp)
+    sd x8,   48(sp)
+    sd x9,   56(sp)
+    sd x10,  64(sp)
+    sd x11,  72(sp)
+    sd x12,  80(sp)
+    sd x13,  88(sp)
+    sd x14,  96(sp)
+    sd x15, 104(sp)
+    sd x16, 112(sp)
+    sd x17, 120(sp)
+    sd x18, 128(sp)
+    sd x19, 136(sp)
+    sd x20, 144(sp)
+    sd x21, 152(sp)
+    sd x22, 160(sp)
+    sd x23, 168(sp)
+    sd x24, 176(sp)
+    sd x25, 184(sp)
+    sd x26, 192(sp)
+    sd x27, 200(sp)
+    sd x28, 208(sp)
+    sd x29, 216(sp)
+    sd x30, 224(sp)
+    sd x31, 232(sp)
+    csrr t0, sepc
+    sd t0, 240(sp)
+    csrr t0, sstatus
+    sd t0, 248(sp)
+    addi t0, sp, 288
+    sd t0, 256(sp)
+    csrr a0, scause
+    srli a1, a0, 63
+    slli a0, a0, 1
+    srli a0, a0, 1
+    call riscv_trap_handler
+    ld t0, 248(sp)
+    csrw sstatus, t0
+    ld t0, 240(sp)
+    csrw sepc, t0
+    ld x1,    0(sp)
+    ld x3,    8(sp)
+    ld x4,   16(sp)
+    ld x5,   24(sp)
+    ld x6,   32(sp)
+    ld x7,   40(sp)
+    ld x8,   48(sp)
+    ld x9,   56(sp)
+    ld x10,  64(sp)
+    ld x11,  72(sp)
+    ld x12,  80(sp)
+    ld x13,  88(sp)
+    ld x14,  96(sp)
+    ld x15, 104(sp)
+    ld x16, 112(sp)
+    ld x17, 120(sp)
+    ld x18, 128(sp)
+    ld x19, 136(sp)
+    ld x20, 144(sp)
+    ld x21, 152(sp)
+    ld x22, 160(sp)
+    ld x23, 168(sp)
+    ld x24, 176(sp)
+    ld x25, 184(sp)
+    ld x26, 192(sp)
+    ld x27, 200(sp)
+    ld x28, 208(sp)
+    ld x29, 216(sp)
+    ld x30, 224(sp)
+    ld x31, 232(sp)
+    addi sp, sp, 288
+    sret
+    .size __riscv_trap_vector, . - __riscv_trap_vector
+    "#
+);
+
+// ---------------------------------------------------------------------
+// RV32 assembly
+// ---------------------------------------------------------------------
+
+#[cfg(all(target_arch = "riscv32", not(test)))]
+core::arch::global_asm!(
+    r#"
+    .section .text.__caplet_switch, "ax"
+    .global __caplet_switch
+    .type __caplet_switch, @function
+__caplet_switch:
+    addi sp, sp, -64
+    sw ra,     0(sp)
+    sw s0,     4(sp)
+    sw s1,     8(sp)
+    sw s2,    12(sp)
+    sw s3,    16(sp)
+    sw s4,    20(sp)
+    sw s5,    24(sp)
+    sw s6,    28(sp)
+    sw s7,    32(sp)
+    sw s8,    36(sp)
+    sw s9,    40(sp)
+    sw s10,   44(sp)
+    sw s11,   48(sp)
+    sw a0,    52(sp)
+    sw zero,  56(sp)
+    sw zero,  60(sp)
+    sw sp, 0(a0)
+    mv sp, a1
+    lw ra,     0(sp)
+    lw s0,     4(sp)
+    lw s1,     8(sp)
+    lw s2,    12(sp)
+    lw s3,    16(sp)
+    lw s4,    20(sp)
+    lw s5,    24(sp)
+    lw s6,    28(sp)
+    lw s7,    32(sp)
+    lw s8,    36(sp)
+    lw s9,    40(sp)
+    lw s10,   44(sp)
+    lw s11,   48(sp)
+    lw a0,    52(sp)
+    addi sp, sp, 64
+    ret
+    .size __caplet_switch, . - __caplet_switch
+
+    .section .text.__caplet_start_first, "ax"
+    .global __caplet_start_first
+    .type __caplet_start_first, @function
+__caplet_start_first:
+    mv sp, a0
+    lw ra,     0(sp)
+    lw s0,     4(sp)
+    lw s1,     8(sp)
+    lw s2,    12(sp)
+    lw s3,    16(sp)
+    lw s4,    20(sp)
+    lw s5,    24(sp)
+    lw s6,    28(sp)
+    lw s7,    32(sp)
+    lw s8,    36(sp)
+    lw s9,    40(sp)
+    lw s10,   44(sp)
+    lw s11,   48(sp)
+    lw a0,    52(sp)
+    addi sp, sp, 64
+    ret
+    .size __caplet_start_first, . - __caplet_start_first
+
+    .section .text.__riscv_trap_vector, "ax"
+    .balign 4
+    .global __riscv_trap_vector
+    .type __riscv_trap_vector, @function
+__riscv_trap_vector:
+    /* 36 words = 144 bytes (RV32), 16-byte aligned. */
+    addi sp, sp, -144
+    sw x1,    0(sp)
+    sw x3,    4(sp)
+    sw x4,    8(sp)
+    sw x5,   12(sp)
+    sw x6,   16(sp)
+    sw x7,   20(sp)
+    sw x8,   24(sp)
+    sw x9,   28(sp)
+    sw x10,  32(sp)
+    sw x11,  36(sp)
+    sw x12,  40(sp)
+    sw x13,  44(sp)
+    sw x14,  48(sp)
+    sw x15,  52(sp)
+    sw x16,  56(sp)
+    sw x17,  60(sp)
+    sw x18,  64(sp)
+    sw x19,  68(sp)
+    sw x20,  72(sp)
+    sw x21,  76(sp)
+    sw x22,  80(sp)
+    sw x23,  84(sp)
+    sw x24,  88(sp)
+    sw x25,  92(sp)
+    sw x26,  96(sp)
+    sw x27, 100(sp)
+    sw x28, 104(sp)
+    sw x29, 108(sp)
+    sw x30, 112(sp)
+    sw x31, 116(sp)
+    csrr t0, sepc
+    sw t0, 120(sp)
+    csrr t0, sstatus
+    sw t0, 124(sp)
+    addi t0, sp, 144
+    sw t0, 128(sp)
+    csrr a0, scause
+    srli a1, a0, 31
+    slli a0, a0, 1
+    srli a0, a0, 1
+    call riscv_trap_handler
+    lw t0, 124(sp)
+    csrw sstatus, t0
+    lw t0, 120(sp)
+    csrw sepc, t0
+    lw x1,    0(sp)
+    lw x3,    4(sp)
+    lw x4,    8(sp)
+    lw x5,   12(sp)
+    lw x6,   16(sp)
+    lw x7,   20(sp)
+    lw x8,   24(sp)
+    lw x9,   28(sp)
+    lw x10,  32(sp)
+    lw x11,  36(sp)
+    lw x12,  40(sp)
+    lw x13,  44(sp)
+    lw x14,  48(sp)
+    lw x15,  52(sp)
+    lw x16,  56(sp)
+    lw x17,  60(sp)
+    lw x18,  64(sp)
+    lw x19,  68(sp)
+    lw x20,  72(sp)
+    lw x21,  76(sp)
+    lw x22,  80(sp)
+    lw x23,  84(sp)
+    lw x24,  88(sp)
+    lw x25,  92(sp)
+    lw x26,  96(sp)
+    lw x27, 100(sp)
+    lw x28, 104(sp)
+    lw x29, 108(sp)
+    lw x30, 112(sp)
+    lw x31, 116(sp)
+    addi sp, sp, 144
+    sret
+    .size __riscv_trap_vector, . - __riscv_trap_vector
+    "#
+);
+
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+extern "C" {
+    /// Cooperative context switch (`prev` receives the current sp).
+    pub fn __caplet_switch(prev_ctx: *mut usize, next_ctx: *const usize);
+    /// Enter the first task; never returns.
+    pub fn __caplet_start_first(next_ctx: *const usize) -> !;
+    /// Global trap entry installed in `stvec`.
+    pub fn __riscv_trap_vector();
+}
+
+/// Rust half of the trap dispatcher.
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+#[no_mangle]
+extern "C" fn riscv_trap_handler(cause: usize, is_interrupt: usize) {
+    const SUPERVISOR_SOFTWARE: usize = 1;
+    const SUPERVISOR_TIMER: usize = 5;
+    const SUPERVISOR_EXTERNAL: usize = 9;
+
+    if is_interrupt != 0 {
+        match cause {
+            SUPERVISOR_EXTERNAL => {
+                crate::plic::Plic::handle_pending();
+            }
+            SUPERVISOR_TIMER => {
+                crate::clint::Clint::acknowledge_timer_irq();
+            }
+            SUPERVISOR_SOFTWARE => {
+                // sip.SSIP is writable from S-mode.  Clearing only the
+                // software-pending bit avoids disturbing timer/external
+                // pending state.
+                unsafe {
+                    core::arch::asm!("csrc sip, {bit}", bit = const 2, options(nostack));
+                }
+            }
+            _ => {}
+        }
+    } else {
+        crate::uart::Uart::put_line("PANIC: unhandled RISC-V supervisor exception");
+        crate::uart::Uart::put_str("scause=");
+        crate::uart::Uart::put_hex(cause as u64);
+        crate::uart::Uart::put_line("");
+        loop {
+            // SAFETY: parking the hart is safe in a fatal handler.
+            unsafe { core::arch::asm!("wfi", options(nostack, preserves_flags)) };
+        }
     }
 }
 
-/// Start the first task by restoring its context and jumping to its PC.
-///
-/// `next_ctx` points to a context built by `build_initial_stack`.
-///
-/// # Safety
-/// - `next_ctx` must be valid and aligned.
-/// - The context's sepc must be a valid, aligned instruction address.
-/// - This function does not return.
-#[cfg(target_arch = "riscv")]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn __caplet_start_first(next_ctx: *mut usize) -> ! {
-    unsafe {
-        core::arch::asm!(
-            // Load the initial sp from the context.
-            "ld sp, 0(a0)",
-            // Restore sstatus (clears SIE so interrupts stay off until first wfi).
-            "ld t0, 104(sp)",
-            "csrw sstatus, t0",
-            // Restore sepc (the entry point).
-            "ld t0, 96(sp)",
-            "csrw sepc, t0",
-            // Restore callee-saved registers (may be zero).
-            "ld s0,  0(sp)",
-            "ld s1,  8(sp)",
-            "ld s2,  16(sp)",
-            "ld s3,  24(sp)",
-            "ld s4,  32(sp)",
-            "ld s5,  40(sp)",
-            "ld s6,  48(sp)",
-            "ld s7,  56(sp)",
-            "ld s8,  64(sp)",
-            "ld s9,  72(sp)",
-            "ld s10, 80(sp)",
-            "ld s11, 88(sp)",
-            // Jump to sepc via mret (mret = machine-mode return, used as
-            // S-mode return-from-trap when in S-mode).
-            "mret",
-            inout("a0") next_ctx => _,
-            options(noreturn)
-        );
-    }
-}
-
-/// Pend a software interrupt via CLINT to trigger a context switch.
-///
-/// This is the RISC-V equivalent of `pend_pendsv()` on Cortex-M.
-#[cfg(target_arch = "riscv")]
+/// Pend a supervisor software interrupt (reschedule request).
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 #[inline(always)]
 pub fn pend_software_irq() {
-    // Write 1 to the CLINT msip register for hart 0.
-    // CLINT base = 0x0200_0000 on QEMU virt.
-    const CLINT_MSIP: usize = 0x0200_0000;
+    // sip.SSIP is the only `sip` bit writable by S-mode, and it is the
+    // correct architectural mechanism for a self-IPI without SBI.
     unsafe {
-        core::arch::asm!(
-            "sw {val}, 0({base})",
-            val = in(reg) 1u32,
-            base = in(reg) CLINT_MSIP as usize,
-            options(nostack, preserves_flags)
-        );
+        core::arch::asm!("csrs sip, {bit}", bit = const 2, options(nostack));
     }
 }
 
-/// Pend a software interrupt (host stub).
-#[cfg(not(target_arch = "riscv"))]
+/// Host stub.
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
 #[inline(always)]
 pub fn pend_software_irq() {}
 
-/// RISC-V trap vector handler.
-///
-/// This is the global trap entry point referenced by stvec.
-/// All synchronous and asynchronous traps (exceptions and interrupts)
-/// land here. A minimal implementation dispatches to appropriate handlers.
+/// Host-testing stub. Context switching is only meaningful on a real
+/// RISC-V hart; keeping the symbol available lets the architecture
+/// bridge and the rest of the workspace compile for `cargo test`.
 ///
 /// # Safety
-/// This function is registered as the trap vector via `csrw stvec, addr`.
-/// It must be `#[no_mangle]` and aligned to a 4-byte boundary.
-#[cfg(target_arch = "riscv")]
-#[unsafe(no_mangle)]
-#[naked]
-pub extern "C" fn __riscv_trap_vector() {
-    unsafe {
-        core::arch::asm!(
-            // Save the current context onto the stack.
-            // We need space for: s0-s11 (12×8) + sepc (8) + sstatus (8) = 120 bytes.
-            "addi sp, sp, -128",
-            "sd s0,  0(sp)",
-            "sd s1,  8(sp)",
-            "sd s2,  16(sp)",
-            "sd s3,  24(sp)",
-            "sd s4,  32(sp)",
-            "sd s5,  40(sp)",
-            "sd s6,  48(sp)",
-            "sd s7,  56(sp)",
-            "sd s8,  64(sp)",
-            "sd s9,  72(sp)",
-            "sd s10, 80(sp)",
-            "sd s11, 88(sp)",
-            "csrr t0, sepc",
-            "sd t0, 96(sp)",
-            "csrr t0, sstatus",
-            "sd t0, 104(sp)",
-            // Read the trap cause.
-            "csrr a0, scause",
-            // Distinguish: a0 >> 63 == 0 → exception, == 1 → interrupt.
-            // On QEMU virt, the only asynchronous traps we expect are:
-            //   1 (user software)    = CLINT msip  (SSI, bit 63 set)
-            //   5 (supervisor timer)  = CLINT mtimecmp  (STI, bit 63 set)
-            //   9 (supervisor ext)    = PLIC external (SEI, bit 63 set)
-            "bge a0, zero, 1f",   // exception: skip interrupt path
-            // --- interrupt path ---
-            "srli a1, a0, 63",     // a1 = 1 if interrupt
-            "andi a0, a0, 0xFFF",  // a0 = cause without interrupt bit
-            "j 2f",
-            // --- exception path ---
-            "1:",
-            "li a1, 0",
-            // a0 = cause, a1 = is_interrupt
-            "2:",
-            // Call the Rust trap handler with (cause, is_interrupt).
-            "call {handler}",
-            // After handling, restore context and return via sret.
-            "ld t0, 104(sp)",
-            "csrw sstatus, t0",
-            "ld t0, 96(sp)",
-            "csrw sepc, t0",
-            "ld s0,  0(sp)",
-            "ld s1,  8(sp)",
-            "ld s2,  16(sp)",
-            "ld s3,  24(sp)",
-            "ld s4,  32(sp)",
-            "ld s5,  40(sp)",
-            "ld s6,  48(sp)",
-            "ld s7,  56(sp)",
-            "ld s8,  64(sp)",
-            "ld s9,  72(sp)",
-            "ld s10, 80(sp)",
-            "ld s11, 88(sp)",
-            "addi sp, sp, 128",
-            "sret",
-            handler = sym riscv_trap_handler,
-            options(noreturn)
-        );
-    }
-}
+///
+/// On real hardware both pointers must be valid initial/context stacks.
+/// This host stub does not dereference them.
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+pub unsafe extern "C" fn __caplet_switch(_prev_ctx: *mut usize, _next_ctx: *const usize) {}
 
-/// Rust trap handler — called from the assembly vector with
-/// `(cause: usize, is_interrupt: usize)` in a0/a1.
-#[cfg(target_arch = "riscv")]
-fn riscv_trap_handler(cause: usize, is_interrupt: usize) {
-    const INTERRUPT_BIT: usize = 1 << 63;
-
-    // 0xFFFFFFFF80000007 = Supervisor external interrupt (PLIC).
-    // 0x8000000000000005 = Supervisor timer interrupt (CLINT mtimecmp).
-    // 0x8000000000000001 = Supervisor software interrupt (CLINT msip).
-    match cause {
-        x if x == INTERRUPT_BIT | 9 => {
-            // External interrupt from PLIC — UART, network, etc.
-            crate::plic::Plic::acknowledge();
-            crate::plic::Plic::handle_pending();
-        }
-        x if x == INTERRUPT_BIT | 5 => {
-            // Timer interrupt — tick.
-            // Clear by advancing mtimecmp past mtime.
-            crate::clint::Clint::acknowledge_timer_irq();
-        }
-        x if x == INTERRUPT_BIT | 1 => {
-            // Software interrupt — scheduler request.
-            // The kernel's scheduler pended this via request_reschedule().
-            crate::clint::Clint::clear_software_irq(0);
-        }
-        _ => {
-            // Unexpected trap — halt.
-            #[cfg(target_arch = "riscv")]
-            {
-                core::arch::asm!("ebreak", options(nostack));
-            }
-        }
-    }
-
-    // If this was an interrupt and a higher-priority task is now ready,
-    // trigger a context switch.
-    if is_interrupt == 1 {
-        caplet_kernel::arch::Arch::request_reschedule();
+/// Host-testing stub for the first-task entry point.
+///
+/// # Safety
+///
+/// `_next_ctx` must point to a valid initial context on real hardware.
+/// This host stub never dereferences it.
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+pub unsafe extern "C" fn __caplet_start_first(_next_ctx: *const usize) -> ! {
+    loop {
+        core::hint::spin_loop();
     }
 }
 
@@ -385,16 +518,22 @@ fn riscv_trap_handler(cause: usize, is_interrupt: usize) {
 mod tests {
     use super::*;
 
-    /// Verify that build_initial_stack produces a correctly laid-out
-    /// context that matches the assembly's expectations.
     #[test]
     fn initial_context_layout() {
         let mut buf = [0usize; 32];
-        let stack_top = buf.as_mut_ptr().wrapping_add(buf.len());
+        let stack_top = unsafe { buf.as_mut_ptr().add(buf.len()) };
         let ctx_ptr = build_initial_stack(stack_top, 0xDEAD_BEEF, 0x1234);
         let ctx = unsafe { core::ptr::read_volatile(ctx_ptr as *const TaskContext) };
-        assert_eq!(ctx.sepc, 0xDEAD_BEEF);
-        assert_eq!(ctx.sstatus & 0x2, 0); // SIE = 0
-        assert_eq!(ctx.sstatus & 0x40000, 0x40000); // SPIE = 1
+        assert_eq!(ctx.ra, 0xDEAD_BEEF);
+        assert_eq!(ctx.a0, 0x1234);
+        assert_eq!(
+            core::mem::size_of::<TaskContext>(),
+            CONTEXT_WORDS * core::mem::size_of::<usize>()
+        );
+        assert_eq!(ctx_ptr as usize % 16, 0);
+        assert_eq!(
+            ctx_ptr as usize + CONTEXT_WORDS * core::mem::size_of::<usize>(),
+            stack_top as usize
+        );
     }
 }

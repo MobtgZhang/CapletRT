@@ -5,11 +5,11 @@
 
 use crate::clint::Clint;
 
-/// System clock frequency on QEMU virt (50 MHz).
+/// CLINT timebase frequency on QEMU virt and Renode `riscv_virt`.
 ///
 /// This is the CLINT clock — derived from the CPU timebase.
 /// In a real system this would be configured by the board or devicetree.
-pub const CLINT_HZ: u64 = 50_000_000;
+pub const CLINT_HZ: u64 = 10_000_000;
 
 /// Number of ticks per second.
 pub const TICKS_PER_SEC: u64 = 1_000_000;

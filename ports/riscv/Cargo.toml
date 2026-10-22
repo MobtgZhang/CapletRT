@@ -13,6 +13,8 @@ caplet-log = { path = "../../crates/caplet-log" }
 caplet-sync = { path = "../../crates/caplet-sync" }
 
 [features]
-default = ["rv32imac"]
+default = []
 rv32imac = []
 rv64gc = []
+echo_uart = []
+debug_irq = []

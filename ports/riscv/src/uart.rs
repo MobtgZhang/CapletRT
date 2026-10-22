@@ -19,15 +19,15 @@
 const UART_BASE: usize = 0x1000_0000;
 
 /// Register offsets (8-bit access, but QEMU maps them as 32-bit).
-const REG_RHR: usize = 0x0;  // Receive / Transmit holding register.
-const REG_IER: usize = 0x1;  // Interrupt enable.
-const REG_LSR: usize = 0x5;  // Line status register.
-const REG_FCR: usize = 0x2;  // FIFO control register.
-const REG_LCR: usize = 0x3;  // Line control register.
+const REG_RHR: usize = 0x0; // Receive / Transmit holding register.
+const REG_IER: usize = 0x1; // Interrupt enable.
+const REG_LSR: usize = 0x5; // Line status register.
+const REG_FCR: usize = 0x2; // FIFO control register.
+const REG_LCR: usize = 0x3; // Line control register.
 
 /// LSR bits.
-const LSR_TX_IDLE: u8 = 1 << 5;  // Transmitter empty.
-const LSR_RX_READY: u8 = 1 << 0;  // Receive data ready.
+const LSR_TX_IDLE: u8 = 1 << 5; // Transmitter empty.
+const LSR_RX_READY: u8 = 1 << 0; // Receive data ready.
 
 /// The UART device.
 pub struct Uart;
@@ -39,8 +39,9 @@ impl Uart {
     /// so this mainly enables transmitter/receiver.
     pub fn init() {
         // Configure: 115200 baud, 8 data bits, 1 stop, no parity.
-        // Divisor = CLINT_HZ / (16 × 115200) = 50_000_000 / 1_843_200 ≈ 27.
-        let divisor = 27u16;
+        // Divisor = clock / (16 × 115200). QEMU virt and Renode use a
+        // 10 MHz UART reference here: 10_000_000 / 1_843_200 ≈ 5.
+        let divisor = 5u16;
         // LCR = 0x80 → set DLAB to access divisor latch.
         Self::write8(REG_LCR, 0x80);
         // Write divisor LSB and MSB.
@@ -78,6 +79,24 @@ impl Uart {
         Self::put_char(b'\n');
     }
 
+    /// Print an unsigned integer as lowercase hexadecimal.
+    pub fn put_hex(mut value: u64) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut buf = [b'0'; 16];
+        let mut i = 16;
+        loop {
+            i -= 1;
+            buf[i] = HEX[(value & 0xf) as usize];
+            value >>= 4;
+            if value == 0 {
+                break;
+            }
+        }
+        for &b in &buf[i..] {
+            Self::put_char(b);
+        }
+    }
+
     /// Read a byte from the UART receive register.
     ///
     /// Returns `None` if no data is available.
@@ -98,6 +117,8 @@ impl Uart {
             // Echo back in debug mode.
             #[cfg(feature = "echo_uart")]
             Self::put_char(c);
+            #[cfg(not(feature = "echo_uart"))]
+            let _ = c;
         }
     }
 

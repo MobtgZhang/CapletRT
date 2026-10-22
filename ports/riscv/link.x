@@ -1,66 +1,62 @@
-/* Linker script for RISC-V (QEMU virt, rv32imac)
+/* Linker script for RISC-V (QEMU virt / Renode riscv_virt).
  *
- * Memory layout (QEMU virt):
- *   flash  : ORIGIN = 0x1000_0000, LENGTH = 512K (simulated ROM)
- *   ram    : ORIGIN = 0x8000_0000, LENGTH = 128M
- *
- * We link the kernel into flash (0x1000_0000) as the primary image.
- * In practice QEMU loads the ELF at 0x8000_0000 (DRAM); the flash
- * region is available as a separate storage device.
+ * Both simulators load an ELF `-kernel` image at its program-header
+ * addresses and jump to `_start`.  The kernel therefore has to be
+ * linked directly into DRAM at 0x8000_0000; linking it at the UART
+ * MMIO address (0x1000_0000) can never boot.
  */
 
 MEMORY
 {
-    flash (rx) : ORIGIN = 0x1000_0000, LENGTH = 512K
-    ram (rwx)  : ORIGIN = 0x8000_0000, LENGTH = 128M
+    RAM (rwx) : ORIGIN = 0x8000_0000, LENGTH = 128M
 }
 
-_stack_size = 4K;
-_heap_size  = 16K;
+_stack_size = 64K;
+_heap_size  = 1M;
 
 ENTRY(_start)
 
 SECTIONS
 {
-    .text : {
+    .text : ALIGN(16) {
         *(.text.entry)
-        *(.text)
-        *(.rodata)
+        *(.text .text.*)
+        *(.rodata .rodata.*)
         _etext = .;
-    } > flash
+    } > RAM
 
-    .data : {
+    .data : ALIGN(16) {
         _sdata = .;
-        *(.data)
+        *(.sdata .sdata.*)
+        *(.data .data.*)
         _edata = .;
-    } > ram AT> flash
+    } > RAM
 
-    /* Tied-to-flash sections that need loading into RAM at startup */
-    .sdata : {
-        _ssdata = .;
-        *(.sdata)
-        _esdata = .;
-    } > ram AT> flash
-
-    .bss : {
+    .bss (NOLOAD) : ALIGN(16) {
         _sbss = .;
-        *(.bss)
+        *(.sbss .sbss.*)
+        *(.bss .bss.*)
         *(COMMON)
         _ebss = .;
-    } > ram
+    } > RAM
 
-    /* Heap and stack — allocated from RAM */
-    .heap : {
+    .heap (NOLOAD) : ALIGN(16) {
         _sheap = .;
-        . = ALIGN(8);
         . += _heap_size;
         _eheap = .;
-    } > ram
+    } > RAM
 
-    .stack : {
+    .stack (NOLOAD) : {
         . = ALIGN(16);
-        _estack = .;
-        . = . + _stack_size;
         _sstack = .;
-    } > ram
+        . = . + _stack_size;
+        _estack = .;
+    } > RAM
+
+    /DISCARD/ :
+    {
+        *(.eh_frame*)
+        *(.comment)
+        *(.note*)
+    }
 }
