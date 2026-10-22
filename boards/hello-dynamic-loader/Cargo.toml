@@ -10,6 +10,8 @@ authors.workspace = true
 caplet-cap = { path = "../../crates/caplet-cap" }
 caplet-loader = { path = "../../crates/caplet-loader" }
 caplet-log = { path = "../../crates/caplet-log" }
+ed25519-dalek = { workspace = true }
+libc = "0.2"
 
 [[bin]]
 name = "hello-dynamic-loader"
