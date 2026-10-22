@@ -85,16 +85,23 @@ fn main() -> ! {
 
 ## 5. CI integration
 
-Add a `build-my-board` and (optionally) `qemu-my-board` job to
-`.github/workflows/ci.yml`. For QEMU emulation, see the existing
-`mps2-an385` / `mps2-an386` machine scripts under
-`tests/qemu-*/run.sh`.
+Register the board in `tools/sim/common.sh` (`board_spec` and
+`all_boards`). QEMU and Renode then run through the shared entry points:
+
+```bash
+tools/sim/run_qemu.sh   my-board
+tools/sim/run_renode.sh my-board
+```
+
+CI invokes `tools/sim/run_matrix.sh` and `tools/sim/renode_matrix.sh`, which
+cover every registered board and aggregate failures. The legacy
+`tests/qemu-*/run.sh` scripts are thin compatibility wrappers around the
+same runner.
 
 ## 6. Sanity checks
 
-Run `tools/check_hal_version.sh` and the `qemu-my-board`
-job. The CI gate refuses a PR that bumps a HAL trait without
-updating the SemVer constants.
+Run `tools/hal_version_gate.sh` and the `qemu-my-board` matrix. The CI gate
+refuses a PR that bumps a HAL trait without updating the SemVer constants.
 
 ## Common pitfalls
 

@@ -1,28 +1,67 @@
 # Industrial Demo Walkthrough
 
-The `industrial-demo` board is the canonical M2 demo. It models
-a small remote telemetry unit that samples a temperature
-sensor and publishes the readings to an MQTT-SN gateway.
+The `industrial-demo` board is the canonical M2 demo. It models a small
+remote telemetry unit that samples a temperature sensor, records each
+reading, publishes five readings over MQTT-SN, and monitors its own health.
+
+The demo runs in QEMU and Renode on the MPS2-AN500 (Cortex-M4F) model, and
+it also builds for RISC-V32/RISC-V64 in the simulation matrix.
 
 ## Architecture
 
 ```
-+-------------------+       +----------------------+
-|  sample_task      |       |  upload_task         |
-|  (every 100 ms)   |       |  (driven by mailbox) |
-|                   |       |                      |
-|  SENSOR.read() --+---mailbox--> mqttsn.publish()   |
-+-------------------+       +----------------------+
-        |                              |
-        v                              v
-   caplet-sensors::MockSensor     caplet-mqttsn::Client
-                                   |
-                                   v
-                          caplet-net (UDP)
-                                   |
-                                   v
-                          Mock broker (in proc)
+                 +---------------------+
+                 |  sample_task (prio 3)|
+                 |  MockSensor.read()  |
+                 +----------+----------+
+                            |
+              +-------------+-------------+
+              v                           v
+   STORAGE_LATEST mailbox        UPLOAD_LATEST mailbox
+              |                           |
+              v                           v
+  +---------------------+      +----------------------+
+  | storage_task (prio 2)|      | upload_task (prio 1) |
+  | checksum + record    |      | MQTT-SN client        |
+  | store [ram-backed]   |      | in-process MockBroker |
+  +---------------------+      +----------------------+
+                            |
+                            v
+                 +----------------------+
+                 | watchdog_task (prio 0)|
+                 | counters only        |
+                 +----------------------+
 ```
+
+The storage and upload mailboxes are independent so neither consumer can
+steal every reading from the other. Priorities are declared on the tasks;
+the watchdog holds no storage or socket token.
+
+## Wire behaviour
+
+The upload task performs the real MQTT-SN state machine over the packet
+builder in `caplet-mqttsn`:
+
+`SEARCHGW -> GWINFO -> CONNECT -> CONNACK -> REGISTER -> REGACK ->
+PUBLISH -> PUBACK (x5) -> DISCONNECT`
+
+Each PUBLISH uses QoS 1, topic `sensors/temp`, topic id `0x1234`, and the
+compact payload `mock-temp&t=NN.NN`. The PUBACK message id is checked, and
+the demo fails if the transaction is still pending afterwards.
+
+`MockBroker` is an **in-process gateway** used by the E2E test. It parses
+and answers the bytes produced by the client, so the test exercises wire
+encoding and state transitions, but it is **not** a live `rumqttd` broker and
+does not traverse a host network stack.
+
+## Storage behaviour
+
+The MPS2 model has no persistent flash controller. Records are kept in a
+bounded RAM store (`RECORD_LOG`) with the same sequence/timestamp/value
+checksum path a flash backend would use. Logs are tagged `[ram-backed]`;
+**no power-loss persistence is claimed**. A production board can swap the
+backend for `caplet-ota::FlashStorage` without changing the task or
+capability boundaries.
 
 ## Source files
 
@@ -41,20 +80,23 @@ cargo build -p industrial-demo --target thumbv7em-none-eabihf
 tests/industrial-e2e/run.sh
 ```
 
-The shell script:
+The strict script (`tests/industrial-e2e/run.sh`) runs the demo through
+`tools/sim/run_qemu.sh industrial-demo` and asserts:
 
-1. Builds the demo.
-2. Launches QEMU with semihosting.
-3. Filters semihosting output for the `PUBLISH temp=...` line
-   produced by `upload_task`.
+- every MQTT-SN packet type appears in the transmit/receive log,
+- exactly five `PUBLISH` and five `PUBACK` events are present,
+- `UPLOAD complete=5 packets=9`,
+- at least one `STORAGE persisted` record,
+- the watchdog reports a healthy heartbeat,
+- the raw QoS 1 PUBLISH header (`wire=180c2012340002`) is present.
 
 ## CI
 
-The `qemu-industrial-e2e` GitHub Actions job runs the script
-above on every PR. A failed run indicates either:
+The `industrial-e2e` CI job runs the script above on every PR. A failed run
+indicates either:
 
-- The mock broker cannot decode the published message, or
-- The semaphore / mailbox plumbing is broken.
+- The in-process gateway cannot decode the published message, or
+- The mailbox / priority / capability plumbing is broken.
 
 ## Replacing `MockSensor` with `Tmp102`
 

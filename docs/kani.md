@@ -1,84 +1,97 @@
 # Kani Verification Catalogue
 
-This document describes the formal-verification harness set
-that ships with CapletRT. Every harness is a small Rust file
-under `tools/kani/harness/` that the `cargo kani` driver runs
-in CI.
+CapletRT's formal-verification catalogue lives in
+`tools/kani/harness/`. The proofs are compiled through the
+`caplet-kani-harnesses` crate and are intentionally small enough to run one
+at a time, so a single failing property cannot hide the rest of the
+catalogue.
 
 ## How to run
 
 ```bash
 cargo install --locked kani-verifier
-cargo kani --harness <name>
+cargo-kani setup
+
+# One proof by Rust function name:
+cargo kani -p caplet-kani-harnesses --harness attenuation_is_monotonic
+
+# Every proof, aggregated by the checked-in script:
+bash tools/kani/run_catalogue.sh
 ```
 
-The CI workflow `kani` job installs the verifier and runs the
-full catalogue in parallel.
+`run_catalogue.sh` extracts every `#[kani::proof]` function, including proofs
+that carry additional attributes such as `#[kani::unwind(16)]`, runs each one
+separately, and fails if any proof fails. A missing `cargo-kani` executable is
+reported as `UNVERIFIED` and exits non-zero; it is never treated as a pass.
 
 ## Catalogue
 
-### Capability invariants
+There are currently 39 proof functions across nine harness modules.
 
-| Harness                                | Property                                                |
-|----------------------------------------|---------------------------------------------------------|
-| `cap_derivation_attenuation.rs`        | A derived cap cannot gain permissions over its parent.  |
-| `cap_revocation_cascade.rs`            | Revoking a parent cap invalidates every child.          |
-| `cap_exclusive_borrow.rs`              | `Cap<&mut T>` is held by at most one task.              |
+### Capability derivation
 
-### Scheduler + IPC
+| Module | Proofs |
+|--------|--------|
+| `cap_derive.rs` | `cap_derive_preserves_parent_metadata` |
+| `derivation_priority_audit.rs` | `attenuation_is_monotonic`, `is_valid_attenuation_iff_subset`, `safety_attenuate_drops_unset_bits`, `restrictive_safety_idempotent_on_parent`, `priority_total_and_reflexive`, `priority_ceiling_of_equal`, `priority_ceiling_picks_higher`, `audit_bit_propagates_correctly` |
 
-| Harness                                | Property                                                |
-|----------------------------------------|---------------------------------------------------------|
-| `priority_ceiling.rs`                  | No priority inversion across the ceiling protocol.      |
-| `ipc_no_lost_wakeup.rs`                | Every notify() reaches a runnable task.                 |
-| `tickless_64bit_counter.rs`            | The 32+32 atomic counter reconstructs the 64-bit tick.  |
+These cover attenuation monotonicity, safety-bit restrictions, priority
+ordering/ceiling behaviour, and audit-bit propagation.
 
-### Filesystem
+### Loader header
 
-| Harness                                | Property                                                |
-|----------------------------------------|---------------------------------------------------------|
-| `fs_handle_lifecycle.rs`               | `Cap<MountPoint>` revoke closes every derived handle.   |
-| `ramfs_consistency.rs`                 | Concurrent reads see a consistent file tree.            |
+| Module | Proofs |
+|--------|--------|
+| `loader_manifest.rs` | `parse_capp_rejects_non_magic_byte0`, `parse_capp_rejects_non_magic_byte1`, `parse_capp_rejects_non_magic_byte2`, `parse_capp_rejects_non_magic_byte3`, `parse_capp_proceeds_past_magic` |
 
-### Network
+The four rejection proofs partition every non-magic prefix by the position of
+its first mismatching byte. They exercise `validate_capp_header`, which is the
+fixed-size gate called by `parse_capp` before any allocation, string decoding,
+relocation processing, or capability-section parsing.
 
-| Harness                                | Property                                                |
-|----------------------------------------|---------------------------------------------------------|
-| `net_socket_table.rs`                  | `SocketTable::open` respects `MAX_SOCKETS`.             |
-| `net_dhcp_state.rs`                    | DHCP state machine never leaves the legal set.          |
-| `mqtt_sn_state.rs`                     | MQTT-SN client never publishes before REGISTER ack.     |
+### MMU permissions
 
-### 25 syscall paths
+| Module | Proofs |
+|--------|--------|
+| `mmu_permissions.rs` | `kernel_page_never_grants_user_access`, `read_only_user_page_maps_to_ap_user_ro`, `writable_user_page_maps_to_ap_user_rw`, `device_page_sets_strongly_ordered_attributes` |
 
-Every `cap_*` syscall has a dedicated harness:
+### Scheduler, IPC and SMP
 
-```
-cap_alloc         cap_derive        cap_revoke        cap_grant
-cap_send          cap_recv          cap_notify        cap_call
+| Module | Proofs |
+|--------|--------|
+| `smp_ipc.rs` | `pinned_affinity_admits_only_its_owner`, `cross_namespace_publish_requires_allowlist_and_capability` |
 
-task_spawn        task_exit         task_yield        task_kill
-task_set_priority task_set_budget   task_block        task_unblock
+### Syscall dispatch
 
-fs_open           fs_close          fs_read           fs_write
-fs_seek
-net_open          net_bind          net_recv          net_send
-net_close
-```
+| Module | Proofs |
+|--------|--------|
+| `syscall_dispatch.rs` | `every_syscall_number_round_trips`, `unknown_syscall_always_errors`, `log_write_is_side_effect_free`, `task_spawn_rejects_zero_arguments`, `task_spawn_rejects_stack_overflow`, `capability_lookup_rejects_null_name`, `duplicate_and_derive_without_live_parent_error`, `memory_operations_reject_zero_size_or_address`, `timer_operations_reject_zero_arguments`, `ipc_operations_reject_null_buffers`, `namespace_join_rejects_missing_namespace`, `module_syscalls_reject_missing_capability`, `crypto_and_flash_reject_missing_grants`, `dispatch_returns_well_formed_result` |
 
-That is 24 + 1 (the audit syscall) = 25 harnesses.
+The syscall enum has 38 variants: 37 operations plus the `None` sentinel.
+The proof catalogue does not claim one harness per syscall; it covers the
+numeric round-trip for the full enum and selected security/argument boundaries
+for the handlers listed above.
 
-## Why Kani, not MIRAI
+### Network protocols
 
-- **Soundness**: Kani produces a CBMC-based proof; MIRAI is a
-  dataflow analyser that can miss bugs.
-- **Portability**: Kani ships pre-built for Linux; MIRAI
-  requires nightly toolchain alignment.
-- **Result format**: Kani's counter-example traces integrate
-  with `cargo test` reports.
+| Module | Proofs |
+|--------|--------|
+| `mqtt_sn_state.rs` | `mqtt_sn_state_legal` |
+| `net_dhcp_state.rs` | `dhcp_shrunk_idle_legal`, `dhcp_shrunk_discover_legal`, `dhcp_shrunk_bound_legal` |
+| `net_socket_table.rs` | `socket_table_open_respects_capacity` |
 
-## Adding a new harness
+## Adding a proof
 
-1. Create `tools/kani/harness/<area>_<name>.rs`.
-2. Annotate the entry function with `#[kani::proof]`.
-3. Add the harness name to `tools/kani/runner.rs`.
-4. Push and confirm the `kani` job is green.
+1. Add a `#[kani::proof]` function to the appropriate module in
+   `tools/kani/harness/`, or register a new module in `tools/kani/src/lib.rs`.
+2. Keep the property self-contained and bound any loops with
+   `#[kani::unwind(N)]` when the default bound is insufficient.
+3. Run `bash tools/kani/run_catalogue.sh`; the script discovers the new
+   function automatically.
+4. Update this catalogue and the proof count.
+
+## Why Kani
+
+- Kani produces a CBMC-backed proof or a concrete counterexample.
+- It runs on stable-toolchain-adjacent Kani releases in Linux CI.
+- A failed or missing verifier is a hard CI failure, not a skipped test.

@@ -42,8 +42,10 @@ contract that every other crate relies on.
 
 ## What the kernel will not do
 
-- **No dynamic loading.** All code is statically linked; the
-  kernel does not execute untrusted binaries.
+- **No ambient dynamic loading.** Static linking remains the default, but
+  `caplet-loader` also supports explicit `.capp`/ELF module loading. A module
+  is admitted only after header validation, manifest capability checks, and
+  (when `FLAG_SIGNED` is set) Ed25519 signature verification.
 - **No mprotect-style tricks.** MPU configuration is static
   and per-task; the kernel never re-programs MPU regions at
   runtime to grant or revoke memory.
@@ -59,16 +61,24 @@ so that a privileged task can forward it to the field bus.
 ## Kani verification
 
 The capability invariants above are encoded as Kani harnesses
-under `tools/kani/harness/`:
+under `tools/kani/harness/`. The current catalogue contains 39 proof
+functions, including:
 
-- `cap_derivation_attenuation.rs` — derived caps cannot gain
-  permissions.
-- `cap_revocation_cascade.rs` — revoking a parent invalidates
-  every child.
-- `priority_ceiling.rs` — protocol correctness.
-- `socket_table_capacity.rs` — socket table respects the cap.
-- Plus 25 syscall harnesses for `cap_task_*`, `cap_ipc_*`,
-  `cap_fs_*`, `cap_net_*`.
+- `cap_derive_preserves_parent_metadata` and
+  `attenuation_is_monotonic` — derivation preserves parent metadata and
+  cannot gain permissions.
+- `restrictive_safety_idempotent_on_parent`,
+  `safety_attenuate_drops_unset_bits`, and
+  `audit_bit_propagates_correctly` — safety and audit bits are restrictive.
+- `priority_ceiling_of_equal`, `priority_ceiling_picks_higher`, and
+  `priority_total_and_reflexive` — priority ordering and ceiling behaviour.
+- `pinned_affinity_admits_only_its_owner` — affinity masks cannot be bypassed.
+- `socket_table_open_respects_capacity`, the DHCP state proofs, and
+  `mqtt_sn_state_legal` — network state/capacity boundaries.
+- Fourteen syscall-dispatch proofs covering syscall-number round-trips,
+  unknown syscalls, argument rejection, namespace/module/crypto/flash
+  capability checks, and well-formed dispatch results. See `docs/kani.md` for
+  the exact list.
 
 See `docs/kani.md` for the harness catalogue.
 
@@ -80,13 +90,14 @@ See `docs/kani.md` for the harness catalogue.
 | Task refuses to release a resource       | `Cap<T>::Drop` triggers cleanup; resource table (Phase 4) is the safety net. |
 | Forged capability                        | Caps are unforgeable; the cap table is only writable from kernel space. |
 | Replay / downgrade attack on permissions | Revocation cascade; attenuation is monotonic. |
-| Kernel compromise via tainted input      | All syscalls validate arguments before mutating state. Kani proves this for the 25 paths. |
+| Kernel compromise via tainted input      | Syscall handlers validate arguments before mutating state; Kani checks the documented dispatch and argument-boundary properties. |
 
 ## Out of scope (M2)
 
 - **Side-channel resistance.** The kernel is written in plain
   Rust with constant-time considerations deferred to a future
   milestone.
-- **Cryptographic attestation.** The M2 demo does not include
-  a TPM or secure element integration; `caplet-hal::crypto` is
-  stubbed.
+- **Cryptographic attestation.** No TPM or secure-element attestation chain is
+  implemented. Software SHA-256, AES-128, and Ed25519 verification are real
+  implementations in `caplet-crypto`; hardware-backed key storage and remote
+  attestation remain future work.
