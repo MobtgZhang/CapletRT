@@ -20,27 +20,40 @@ pub mod channel;
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+#[cfg(target_has_atomic = "64")]
+use core::sync::atomic::AtomicU64;
+
 /// Memory budget (heap bytes). 32-bit is enough for any
 /// Cortex-M target since the address space itself is 32-bit.
 pub type Bytes = u32;
 
-/// CPU budget expressed in microseconds. On Cortex-M, 32-bit allows
-/// ~4294 seconds (71 minutes) before overflow. For longer durations,
-/// use a 64-bit counter on other targets.
-#[cfg(target_arch = "arm")]
-pub type MicroSeconds = u32;
-/// CPU budget expressed in microseconds. On non-ARM targets, 64-bit
-/// allows ~580_000 years before overflow.
-#[cfg(not(target_arch = "arm"))]
+/// CPU budget expressed in microseconds.
+///
+/// We use 64 bits only on targets that actually provide 64-bit
+/// atomics (host, Cortex-A, RV64). Bare 32-bit MCU targets such as
+/// `thumbv6m`/`thumbv7em`/`riscv32` only have 32-bit atomic
+/// load/store, so the counter must stay 32-bit or the tracker cannot
+/// be probed lock-free from an interrupt.
+#[cfg(target_has_atomic = "64")]
 pub type MicroSeconds = u64;
+/// 32-bit variant: ~4294 seconds (71 minutes) before saturation.
+#[cfg(not(target_has_atomic = "64"))]
+pub type MicroSeconds = u32;
 
 /// Messages counted (both sent and received).
-#[cfg(target_arch = "arm")]
-pub type MessageCount = u32;
-/// Messages counted (both sent and received). On non-ARM targets,
-/// 64-bit allows ~580_000 years before overflow.
-#[cfg(not(target_arch = "arm"))]
+#[cfg(target_has_atomic = "64")]
 pub type MessageCount = u64;
+/// 32-bit variant. Saturates instead of overflowing.
+#[cfg(not(target_has_atomic = "64"))]
+pub type MessageCount = u32;
+
+/// The counter storage backing `cpu_used` / `messages_used`. It must
+/// always be exactly as wide as its public type above.
+#[cfg(target_has_atomic = "64")]
+type AtomicCounter = AtomicU64;
+/// The counter storage backing `cpu_used` / `messages_used`.
+#[cfg(not(target_has_atomic = "64"))]
+type AtomicCounter = AtomicU32;
 
 /// All three resource classes in one constant record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,10 +134,10 @@ impl BudgetError {
             (_, BudgetError::MemoryExceeded { .. }) => other,
             (BudgetError::MessageRateExceeded { .. }, _) => self,
             (_, BudgetError::MessageRateExceeded { .. }) => other,
+            // Both are `CpuExceeded`; the two arms above already
+            // eliminated every mixed pair, so `self` is the entire
+            // remaining case space.
             (BudgetError::CpuExceeded { .. }, BudgetError::CpuExceeded { .. }) => self,
-            // All other combinations are covered by the above.
-            // If we somehow reach here, return self as fallback.
-            (BudgetError::CpuExceeded { .. }, _) => self,
         }
     }
 }
@@ -136,15 +149,11 @@ impl BudgetError {
 pub struct BudgetTracker {
     /// Heap bytes currently owned.
     memory_used: AtomicU32,
-    /// CPU microseconds used in the current quantum.
-    #[cfg(target_arch = "arm")]
-    cpu_used: AtomicU32,
-    #[cfg(not(target_arch = "arm"))]
+    /// CPU microseconds used in the current quantum. Width follows
+    /// [`MicroSeconds`] on this target.
     cpu_used: AtomicCounter,
-    /// Messages exchanged in the current 1-second window.
-    #[cfg(target_arch = "arm")]
-    messages_used: AtomicU32,
-    #[cfg(not(target_arch = "arm"))]
+    /// Messages exchanged in the current 1-second window. Width
+    /// follows [`MessageCount`] on this target.
     messages_used: AtomicCounter,
     /// Hard limits. Set once during construction; effectively
     /// immutable after that so no atomics are needed.
@@ -156,13 +165,7 @@ impl BudgetTracker {
     pub fn new(budget: Budget) -> Self {
         Self {
             memory_used: AtomicU32::new(0),
-            #[cfg(target_arch = "arm")]
-            cpu_used: AtomicU32::new(0),
-            #[cfg(not(target_arch = "arm"))]
             cpu_used: AtomicCounter::new(0),
-            #[cfg(target_arch = "arm")]
-            messages_used: AtomicU32::new(0),
-            #[cfg(not(target_arch = "arm"))]
             messages_used: AtomicCounter::new(0),
             limits: budget,
         }
@@ -191,8 +194,22 @@ impl BudgetTracker {
     }
 
     /// Release `n` bytes (refund).
+    ///
+    /// Saturates at zero rather than under-flowing: a double refund
+    /// must not wrap the counter to `u32::MAX` and hand the task an
+    /// effectively unlimited budget.
     pub fn refund_memory(&self, n: Bytes) {
-        self.memory_used.fetch_sub(n.min(self.memory_used.load(Ordering::Relaxed)), Ordering::AcqRel);
+        loop {
+            let cur = self.memory_used.load(Ordering::Relaxed);
+            let next = cur.saturating_sub(n);
+            if self
+                .memory_used
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
     }
 
     /// Try to charge `us` microseconds to the CPU budget.
@@ -246,6 +263,45 @@ impl BudgetTracker {
     /// Reset the message rate (called every second).
     pub fn reset_messages(&self) {
         self.messages_used.store(0, Ordering::Release);
+    }
+
+    /// Refund one previously charged message.
+    ///
+    /// Callers that reserve quota before a fallible operation use this
+    /// when the operation fails, so a rejected send neither delivers a
+    /// message nor consumes the sender's quota.
+    pub fn refund_message(&self) {
+        loop {
+            let cur = self.messages_used.load(Ordering::Relaxed);
+            let next = cur.saturating_sub(1);
+            if self
+                .messages_used
+                .compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
+    }
+
+    /// Current heap-byte usage.
+    pub fn memory_used(&self) -> Bytes {
+        self.memory_used.load(Ordering::Acquire)
+    }
+
+    /// Current CPU-time usage in the active quantum.
+    pub fn cpu_used(&self) -> MicroSeconds {
+        self.cpu_used.load(Ordering::Acquire)
+    }
+
+    /// Current message count in the active one-second window.
+    pub fn messages_used(&self) -> MessageCount {
+        self.messages_used.load(Ordering::Acquire)
+    }
+
+    /// Immutable limits this tracker enforces.
+    pub fn limits(&self) -> Budget {
+        self.limits
     }
 }
 
@@ -313,5 +369,17 @@ mod tests {
         };
         let merged = mem.merge(cpu);
         assert!(matches!(merged, BudgetError::MemoryExceeded { .. }));
+    }
+
+    #[test]
+    fn refund_message_restores_quota() {
+        let t = BudgetTracker::new(Budget {
+            messages_per_sec: 1,
+            ..Budget::default()
+        });
+        assert!(t.charge_message().is_ok());
+        assert!(t.charge_message().is_err());
+        t.refund_message();
+        assert!(t.charge_message().is_ok());
     }
 }

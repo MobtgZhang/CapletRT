@@ -58,10 +58,7 @@ impl Ring {
             slots: [RejectionEvent {
                 source: 0,
                 task: 0,
-                reason: BudgetError::MessageRateExceeded {
-                    used: 0,
-                    limit: 0,
-                },
+                reason: BudgetError::MessageRateExceeded { used: 0, limit: 0 },
             }; RING_CAP],
             head: 0,
             tail: 0,
@@ -137,7 +134,15 @@ impl RejectionChannel {
 
     /// Subscribe a [`RejectionSink`] to this channel.
     pub fn subscribe(self: &Arc<Self>) -> RejectionSink {
-        RejectionSink { channel: self.clone() }
+        RejectionSink {
+            channel: self.clone(),
+        }
+    }
+}
+
+impl Default for RejectionChannel {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -178,7 +183,11 @@ pub struct TrackedBudget {
 impl TrackedBudget {
     /// Create a new tracked budget.
     pub fn new(tracker: BudgetTracker, sink: RejectionSink, task_id: u32) -> Self {
-        Self { tracker, sink, task_id }
+        Self {
+            tracker,
+            sink,
+            task_id,
+        }
     }
 
     /// Try to charge memory, reporting on failure.
