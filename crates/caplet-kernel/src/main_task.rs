@@ -8,16 +8,17 @@
 use crate::kernel::Kernel;
 use crate::priority::Priority;
 use crate::scheduler::ScheduledTask;
-use crate::tickless;
 
 /// Create the main user task
 pub fn create_main_task(kernel: &Kernel) -> ScheduledTask {
+    let memory = kernel.memory();
     ScheduledTask::new(
-        1, // Main task ID
+        kernel.boot_task_id().saturating_add(1),
         Priority::default(),
         0, // Entry point set by board
-        0x2000_1000, // Stack pointer
+        memory.heap_start as usize,
     )
+    .with_stack_size(memory.kernel_stack_size as u32)
 }
 
 /// Create idle task
@@ -25,7 +26,7 @@ pub fn create_idle_task() -> ScheduledTask {
     ScheduledTask::new(
         0xFF, // Idle task ID
         Priority::LOWEST,
-        idle_task as *const () as u32,
+        idle_task as *const () as usize,
         0x2000_2000, // Stack pointer
     )
 }
@@ -56,13 +57,15 @@ pub extern "C" fn idle_task() -> ! {
 pub extern "C" fn idle_task() -> ! {
     loop {
         // Program the next deadline and wait for an interrupt.
-        let deadline = tickless::NEXT_DEADLINE_TICKS.load(core::sync::atomic::Ordering::Relaxed);
-        let now = tickless::now();
+        let deadline = crate::tickless::compute_idle_deadline().unwrap_or_else(|| {
+            crate::tickless::NEXT_DEADLINE_TICKS.load(core::sync::atomic::Ordering::Relaxed)
+        });
+        let now = crate::tickless::now();
         let delta: u32 = compute_idle_delta(deadline, now);
         // Bump the wakeup counter so the test harness can confirm
         // we entered and exited idle as expected.
-        tickless::record_wakeup(delta);
-        tickless::enter_idle(delta);
+        crate::tickless::record_wakeup(delta);
+        crate::tickless::enter_idle(delta);
     }
 }
 

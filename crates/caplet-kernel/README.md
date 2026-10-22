@@ -33,5 +33,12 @@ to override.
 
 ## Status
 
-Active development; the M1 milestone is complete and the M2
-work is layered on top.
+M1 and M2 are implemented: the scheduler, syscall dispatch, capability
+table, priority inheritance/ceiling paths, tickless idle, SMP support, and
+the namespace/IPC layer are present and exercised by host tests plus the
+QEMU/Renode board matrix. The simulator matrix is the integration gate for
+this crate; see `tools/sim/common.sh` for the board list.
+
+The kernel is not a formally verified whole: Kani covers selected
+capability, syscall, MMU, scheduler, IPC, and protocol state machines (see
+`docs/kani.md`), not the complete kernel.

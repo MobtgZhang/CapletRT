@@ -11,19 +11,28 @@ caplet-cap = { path = "../caplet-cap" }
 caplet-task = { path = "../caplet-task" }
 caplet-async = { path = "../caplet-async" }
 caplet-sync = { path = "../caplet-sync" }
+caplet-timer = { path = "../caplet-timer" }
 caplet-budget = { path = "../caplet-budget" }
+caplet-crypto = { path = "../caplet-crypto" }
+caplet-security = { path = "../caplet-security" }
+caplet-log = { path = "../caplet-log", optional = true }
+caplet-loader = { path = "../caplet-loader", optional = true, features = ["crypto"] }
 hashbrown.workspace = true
 linked_list_allocator = "0.10"
 
 [features]
-default = []
-# Enable pure-software AES-128 and SHA-256 implementations for testing
-# and platforms without hardware crypto. NOT cryptographically reviewed —
-# do NOT use in production without audit.
+default = ["module-loader"]
+# Dynamic module syscalls (`ModuleLoad` / `ModuleRegister` / `ModuleStart`).
+module-loader = ["dep:caplet-loader"]
+# Route boot diagnostics through the optional `caplet-log` framework.
+log = ["dep:caplet-log"]
+# Deprecated compatibility feature. Crypto primitives are always provided by
+# `caplet-crypto`; this feature no longer enables a home-grown implementation.
 soft-crypto = []
 
 [dev-dependencies]
 caplet-bench-harness = { path = "../caplet-bench-harness" }
+ed25519-dalek.workspace = true
 
 [[bench]]
 name = "context_switch_bench"

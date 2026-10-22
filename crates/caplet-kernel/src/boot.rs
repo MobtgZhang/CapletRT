@@ -9,8 +9,6 @@
 use crate::kernel::Kernel;
 use crate::priority::Priority;
 use crate::scheduler::ScheduledTask;
-use crate::kernel_config::KernelConfig;
-use crate::memory::MemoryLayout;
 
 /// Boot task - the first task started by the kernel
 pub struct BootTask {
@@ -33,13 +31,13 @@ impl BootTask {
     }
 
     /// Get the task entry point
-    pub fn entry(&self) -> u32 {
-        boot_task_main as *const () as u32
+    pub fn entry(&self) -> usize {
+        boot_task_main as *const () as usize
     }
 
     /// Get the stack pointer
-    pub fn stack_pointer(&self) -> u32 {
-        self.stack_base + self.stack_size as u32
+    pub fn stack_pointer(&self) -> usize {
+        self.stack_base as usize + self.stack_size
     }
 
     /// Convert to a scheduled task
@@ -70,8 +68,8 @@ pub extern "C" fn boot_task_main() -> ! {
 
     #[cfg(feature = "log")]
     {
-        crate::println!("[boot] CapletRT kernel initialized");
-        crate::println!("[boot] Boot task starting...");
+        caplet_log::info!("boot", "CapletRT kernel initialized");
+        caplet_log::info!("boot", "Boot task starting...");
     }
 
     // Step 2: Load board configuration
@@ -89,8 +87,8 @@ pub extern "C" fn boot_task_main() -> ! {
 
     #[cfg(feature = "log")]
     {
-        crate::println!("[boot] Board configuration loaded");
-        crate::println!("[boot] Entering idle loop...");
+        caplet_log::info!("boot", "Board configuration loaded");
+        caplet_log::info!("boot", "Entering idle loop...");
     }
 
     // Step 5: Enter idle loop
@@ -101,16 +99,11 @@ pub extern "C" fn boot_task_main() -> ! {
 /// Idle loop - called when no tasks are ready to run
 #[cfg(target_arch = "arm")]
 fn idle_loop() -> ! {
-    // On ARM, this function should be overridden by the cortex-m port.
-    // For now, we provide a fallback that can be overridden.
-    #[cfg(feature = "cortex_m_idle")]
-    {
-        cortex_m::asm::wfi();
-    }
-    #[cfg(not(feature = "cortex_m_idle"))]
-    {
-        loop {
-            core::hint::spin_loop();
+    // Sleep until the next interrupt instead of burning cycles. Boards that
+    // need a different idle policy install their own idle task.
+    loop {
+        unsafe {
+            core::arch::asm!("wfi", options(nostack, preserves_flags));
         }
     }
 }
@@ -129,13 +122,15 @@ pub fn init_boot_task(kernel: &mut Kernel) {
 
     #[cfg(feature = "log")]
     {
-        crate::println!(
-            "[boot] Boot task configured: priority={}, stack={:#x}",
+        caplet_log::info!(
+            "boot",
+            "Boot task configured: priority={}, stack={:#x}",
             boot.priority.0,
             boot.stack_size
         );
     }
 
-    // Register boot task with kernel
-    // The kernel would add it to the scheduler here
+    // Register the boot task with the scheduler so the first context switch
+    // has a real entry point to resume.
+    kernel.add_task(boot.to_scheduled().with_stack_size(boot.stack_size as u32));
 }

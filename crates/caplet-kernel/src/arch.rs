@@ -82,14 +82,14 @@ pub trait Arch {
     /// The pointers must each be valid for a register-frame save done
     /// by a previous `__caplet_switch` call (or the initial context
     /// built by the port's `build_initial_context`).
-    unsafe fn context_switch(prev: *mut u32, next: *const u32);
+    unsafe fn context_switch(prev: *mut usize, next: *const usize);
     /// Run the first task. The `next` context was built by
     /// `build_initial_context` and is consumed (not saved back).
     ///
     /// # Safety
     /// `next` must point to a freshly built initial context whose
     /// `pc` is a valid entry point. The function does not return.
-    unsafe fn start_first_task(next: *const u32) -> !;
+    unsafe fn start_first_task(next: *const usize) -> !;
     /// Send an inter-processor interrupt.
     fn ipi_send(_target: CpuId, _reason: IpiReason, _arg: u32) {}
     /// Acknowledge the last IPI. Called from the IPI handler.

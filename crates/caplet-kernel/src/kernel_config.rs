@@ -1,7 +1,7 @@
 //! Kernel configuration
 
-use crate::priority::Priority;
 use crate::memory::MemoryLayout;
+use crate::priority::Priority;
 
 /// Kernel configuration parameters
 pub struct KernelConfig {
@@ -25,9 +25,8 @@ pub struct KernelConfig {
     pub audit_log: bool,
 }
 
-impl KernelConfig {
-    /// Create default configuration
-    pub fn default() -> Self {
+impl Default for KernelConfig {
+    fn default() -> Self {
         Self {
             memory: MemoryLayout::default(),
             max_tasks: 16,
@@ -40,7 +39,9 @@ impl KernelConfig {
             audit_log: false,
         }
     }
+}
 
+impl KernelConfig {
     /// Create minimal configuration for embedded systems
     pub fn minimal() -> Self {
         Self {
@@ -58,8 +59,21 @@ impl KernelConfig {
 
     /// Create QEMU configuration
     pub fn qemu() -> Self {
+        #[cfg(target_arch = "riscv64")]
+        let memory = MemoryLayout::riscv_virt();
+        #[cfg(target_arch = "riscv32")]
+        let memory = MemoryLayout::riscv_virt();
+        #[cfg(target_arch = "aarch64")]
+        let memory = MemoryLayout::aarch64_virt();
+        #[cfg(not(any(
+            target_arch = "riscv64",
+            target_arch = "riscv32",
+            target_arch = "aarch64"
+        )))]
+        let memory = MemoryLayout::qemu();
+
         Self {
-            memory: MemoryLayout::qemu(),
+            memory,
             max_tasks: 8,
             max_interrupts: 32,
             max_channels: 4,
@@ -70,10 +84,26 @@ impl KernelConfig {
             audit_log: false,
         }
     }
-}
 
-impl Default for KernelConfig {
-    fn default() -> Self {
-        Self::default()
+    /// Configuration for the QEMU RISC-V `virt` machine.
+    pub fn riscv_virt() -> Self {
+        let mut cfg = Self::qemu();
+        cfg.memory = MemoryLayout::riscv_virt();
+        cfg
+    }
+
+    /// Configuration for the QEMU AArch64 `virt` machine.
+    pub fn aarch64_virt() -> Self {
+        let mut cfg = Self::qemu();
+        cfg.memory = MemoryLayout::aarch64_virt();
+        cfg
+    }
+
+    /// Configuration for the QEMU `vexpress-a9` / Renode Cortex-A9 and
+    /// Allwinner A20 images.
+    pub fn cortex_a9() -> Self {
+        let mut cfg = Self::qemu();
+        cfg.memory = MemoryLayout::vexpress_a9();
+        cfg
     }
 }

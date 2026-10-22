@@ -1,8 +1,11 @@
 //! Kernel initialization
+//!
+//! All initialisation paths publish the *same* kernel instance through
+//! [`crate::kernel::init_kernel`]; there is no second `static mut`
+//! instance.
 
-use crate::kernel::Kernel;
+use crate::kernel::{get_kernel, init_kernel, Kernel};
 use crate::kernel_config::KernelConfig;
-use core::mem::MaybeUninit;
 
 /// Initialize the CapletRT kernel
 ///
@@ -13,28 +16,16 @@ use core::mem::MaybeUninit;
 ///
 /// This function must be called only once, early in boot.
 pub fn cap_init() -> &'static mut Kernel {
-    // Create default configuration for QEMU
-    let config = KernelConfig::qemu();
-
-    // Initialize global kernel using MaybeUninit for safety
-    unsafe {
-        static mut KERNEL_INSTANCE: MaybeUninit<Kernel> = MaybeUninit::uninit();
-        KERNEL_INSTANCE.write(Kernel::new(config));
-        let kernel = KERNEL_INSTANCE.assume_init_mut();
-        kernel.init();
-        kernel
-    }
+    cap_init_with_config(KernelConfig::qemu())
 }
 
 /// Initialize the kernel with custom config
 pub fn cap_init_with_config(config: KernelConfig) -> &'static mut Kernel {
-    unsafe {
-        static mut KERNEL_INSTANCE: MaybeUninit<Kernel> = MaybeUninit::uninit();
-        KERNEL_INSTANCE.write(Kernel::new(config));
-        let kernel = KERNEL_INSTANCE.assume_init_mut();
-        kernel.init();
-        kernel
-    }
+    // Safety: boot code is single-threaded and `init_kernel` is
+    // idempotent, so repeated calls return the first published
+    // instance.
+    unsafe { init_kernel(config) };
+    unsafe { get_kernel() }.expect("kernel initialisation failed")
 }
 
 /// Kernel default entry point stub. The `#[caplet::main]` attribute

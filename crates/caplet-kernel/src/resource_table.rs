@@ -106,7 +106,9 @@ mod tests {
     #[test]
     fn register_and_unregister() {
         let drops = Arc::new(AtomicU32::new(0));
-        let r = CountingResource { drops: Arc::clone(&drops) };
+        let r = CountingResource {
+            drops: Arc::clone(&drops),
+        };
         let t = ResourceTable::new();
         let id = t.register(r);
         assert!(t.get(id).is_some());
@@ -118,8 +120,12 @@ mod tests {
     #[test]
     fn multiple_resources_have_unique_ids() {
         let t = ResourceTable::new();
-        let id1 = t.register(CountingResource { drops: Arc::new(AtomicU32::new(0)) });
-        let id2 = t.register(CountingResource { drops: Arc::new(AtomicU32::new(0)) });
+        let id1 = t.register(CountingResource {
+            drops: Arc::new(AtomicU32::new(0)),
+        });
+        let id2 = t.register(CountingResource {
+            drops: Arc::new(AtomicU32::new(0)),
+        });
         assert_ne!(id1, id2);
         assert_eq!(t.len(), 2);
     }
