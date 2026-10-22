@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn systick_24bit_reload_truncates() {
-        assert_eq!(systick_24bit_reload(0xFFFF_FFFF), 0xFFFF_FF);
+        assert_eq!(systick_24bit_reload(0xFFFF_FFFF), 0x00FF_FFFF);
         assert_eq!(systick_24bit_reload(0), 1);
     }
 }
