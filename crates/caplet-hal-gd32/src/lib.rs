@@ -4,7 +4,7 @@
 //! their register layout with STM32F1 / STM32F4 respectively.
 //! For M2 we expose:
 //!
-//! * [`ReexportStmF4`] — type alias bundle pointing at the STM32F4
+//! * [`reexport_stm_f4`] — type alias bundle pointing at the STM32F4
 //!   HAL, suitable for board crates that target GD32F450 (which
 //!   is a drop-in replacement for STM32F4). This is the recommended
 //!   path for early adopters because no extra code has to be
@@ -36,17 +36,17 @@ pub enum Gd32Family {
 pub const FAMILY: Gd32Family = Gd32Family::F450;
 
 /// Type alias bundle for `GD32F4`-compatible boards. Boards
-/// targetting the F450 can `use caplet_hal_gd32::ReexportStmF4::*`
+/// targeting the F450 can `use caplet_hal_gd32::reexport_stm_f4::*`
 /// to pull in the STM32F4 driver types verbatim.
-pub mod ReexportStmF4 {
-    pub use crate::f4_compat::Port;
-    pub use crate::f4_compat::PortMode;
+pub mod reexport_stm_f4 {
+    pub use crate::f4_compat::Flash;
     pub use crate::f4_compat::Pin;
     pub use crate::f4_compat::PinRef;
+    pub use crate::f4_compat::Port;
+    pub use crate::f4_compat::PortMode;
     pub use crate::f4_compat::Rcc;
-    pub use crate::f4_compat::Usart;
     pub use crate::f4_compat::StmTimer;
-    pub use crate::f4_compat::Flash;
+    pub use crate::f4_compat::Usart;
 }
 
 /// GD32-specific errata that the kernel should work around.
@@ -64,10 +64,7 @@ pub enum Errata {
     NoNestedIrq,
 }
 
-const ERRATA_LIST: &[Errata] = &[
-    Errata::AdcNeedsWarmup,
-    Errata::NoNestedIrq,
-];
+const ERRATA_LIST: &[Errata] = &[Errata::AdcNeedsWarmup, Errata::NoNestedIrq];
 
 /// Apply the static errata workarounds that affect the currently
 /// selected `FAMILY`. Idempotent; safe to call multiple times.
