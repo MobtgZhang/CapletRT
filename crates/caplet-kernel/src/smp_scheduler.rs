@@ -136,6 +136,11 @@ impl Default for AffinityMask {
 
 /// SMP scheduler.
 pub struct SmpScheduler {
+    /// Number of CPUs owned by this scheduler instance.  The global
+    /// `cpu_count` is boot-time configuration and may be changed by a
+    /// different scheduler (or test), so placement decisions must use
+    /// this instance-local value.
+    cpu_count: usize,
     /// Per-CPU state, one slot per possible CPU.
     cpus: [PerCpuState; MAX_CPUS],
     /// Global overflow queue for tasks that have not yet been
@@ -149,6 +154,10 @@ pub struct SmpScheduler {
     affinity: SpinLock<BTreeMap<u32, AffinityMask>>,
     /// Per-task pin (used for migration counting).
     pinned_to: SpinLock<BTreeMap<u32, CpuId>>,
+    /// Canonical task table. Ready queues hold copies for ordering;
+    /// this map is the source of truth for wakeups after a task has
+    /// been blocked and removed from every queue.
+    tasks: BTreeMap<u32, ScheduledTask>,
     /// Counter for affinity decisions (round-robin placement).
     next_placement: SpinLock<u32>,
 }
@@ -172,11 +181,13 @@ impl SmpScheduler {
             slot.idle_task = 0;
         }
         Self {
+            cpu_count: n,
             cpus,
             global: SpinLock::new(ReadyQueue::new()),
             single: Scheduler::new(),
             affinity: SpinLock::new(BTreeMap::new()),
             pinned_to: SpinLock::new(BTreeMap::new()),
+            tasks: BTreeMap::new(),
             next_placement: SpinLock::new(0),
         }
     }
@@ -190,6 +201,7 @@ impl SmpScheduler {
 
     /// Add a new task with a specific affinity mask.
     pub fn add_task_with_affinity(&mut self, task: ScheduledTask, mask: AffinityMask) {
+        self.tasks.insert(task.id, task);
         if !matches!(mask, AffinityMask::ANY) {
             self.affinity.lock().insert(task.id, mask);
             if let Some(cpu) = mask.first_allowed() {
@@ -210,7 +222,7 @@ impl SmpScheduler {
     /// changes).
     pub fn tick(&mut self) -> SmpOutcome {
         let cpu = current_cpu();
-        if (cpu.0 as usize) >= MAX_CPUS {
+        if (cpu.0 as usize) >= self.cpu_count {
             return SmpOutcome::Idle;
         }
 
@@ -223,8 +235,7 @@ impl SmpScheduler {
         }
 
         // Balance the queues every BALANCE_INTERVAL ticks.
-        self.cpus[cpu.index()].balance_ticks =
-            self.cpus[cpu.index()].balance_ticks.wrapping_add(1);
+        self.cpus[cpu.index()].balance_ticks = self.cpus[cpu.index()].balance_ticks.wrapping_add(1);
         if self.cpus[cpu.index()].balance_ticks >= BALANCE_INTERVAL {
             self.cpus[cpu.index()].balance_ticks = 0;
             self.balance_load();
@@ -233,17 +244,27 @@ impl SmpScheduler {
         // Pick the next task.
         match self.cpus[cpu.index()].run_queue.dequeue() {
             Some(next) => {
-                let prev_id = self.cpus[cpu.index()].current.take().map(|t| {
-                    self.cpus[cpu.index()].run_queue.enqueue(t);
-                    0 // placeholder; real prev id is set by the port
-                });
+                let prev_id = match self.cpus[cpu.index()].current.take() {
+                    Some(prev) if prev.id == next.id => {
+                        // A duplicate wake raced with this tick. Drop the
+                        // queued copy and keep the running task in place.
+                        self.cpus[cpu.index()].current = Some(prev);
+                        return SmpOutcome::Continue { cpu };
+                    }
+                    Some(prev) => {
+                        let id = prev.id;
+                        self.cpus[cpu.index()].run_queue.enqueue(prev);
+                        id
+                    }
+                    None => 0,
+                };
                 let next_id = next.id;
                 self.cpus[cpu.index()].current = Some(next);
                 self.cpus[cpu.index()].context_switches =
                     self.cpus[cpu.index()].context_switches.wrapping_add(1);
                 SmpOutcome::LocalSwitch {
                     cpu,
-                    prev: prev_id.unwrap_or(0),
+                    prev: prev_id,
                     next: next_id,
                 }
             }
@@ -258,49 +279,93 @@ impl SmpScheduler {
     /// Returns `Some(outcome)` if a switch is required.
     pub fn tick_preempt(&mut self) -> Option<SmpOutcome> {
         let cpu = current_cpu();
-        if (cpu.0 as usize) >= MAX_CPUS {
+        if (cpu.0 as usize) >= self.cpu_count {
             return None;
         }
-        let state = &mut self.cpus[cpu.index()];
-        let cur = state.current.take()?;
-        state.run_queue.enqueue(cur);
         let outcome = self.tick();
-        Some(outcome)
+        match outcome {
+            SmpOutcome::Continue { .. } | SmpOutcome::Idle => None,
+            other => Some(other),
+        }
     }
 
     /// Mark a task as ready. Used after unblock / IPC wakeup.
     pub fn make_ready(&mut self, task_id: u32) {
-        // Try pinned CPU first.
-        let target = self.pinned_to.lock().get(&task_id).copied();
+        let Some(task) = self.tasks.get(&task_id).copied() else {
+            // Waking an unknown task is a no-op; the alternative would be
+            // manufacturing a task with no entry point or stack.
+            return;
+        };
+        if self.task_is_queued(task_id) {
+            // Shell-style wake APIs may be called more than once (for
+            // example a timer and an explicit wake racing). A task must
+            // only have one runnable copy in the scheduler.
+            return;
+        }
         let mask = self
             .affinity
             .lock()
             .get(&task_id)
             .copied()
             .unwrap_or(AffinityMask::ANY);
+        // Try the last placement only while it remains compatible with
+        // the task's affinity mask. A stale pin from a previous
+        // migration must never override a restrictive mask.
+        let target = self
+            .pinned_to
+            .lock()
+            .get(&task_id)
+            .copied()
+            .filter(|cpu| mask.allows(*cpu));
         let cpu = target
             .or_else(|| self.pick_target_cpu(mask))
             .unwrap_or(current_cpu());
-        // Look up the task in the task table by walking the queues is
-        // O(n); for M3 we accept this. A real production kernel would
-        // keep a `BTreeMap<u32, ScheduledTask>`.
-        self.requeue_task_on(task_id, cpu);
+        if mask.allows(cpu) && (cpu.0 as usize) < self.cpu_count {
+            self.cpus[cpu.index()].run_queue.enqueue(task);
+        } else {
+            self.global.lock().enqueue(task);
+        }
     }
 
     /// Migrate a task to a new CPU.
     pub fn migrate(&mut self, task_id: u32, dst: CpuId) -> Result<(), MigrateError> {
-        if (dst.0 as usize) >= MAX_CPUS {
+        if (dst.0 as usize) >= self.cpu_count {
             return Err(MigrateError::InvalidCpu);
         }
+        let task = self
+            .tasks
+            .get(&task_id)
+            .copied()
+            .ok_or(MigrateError::NotFound)?;
+        let mask = self
+            .affinity
+            .lock()
+            .get(&task_id)
+            .copied()
+            .unwrap_or(AffinityMask::ANY);
+        if !mask.allows(dst) {
+            return Err(MigrateError::AffinityDenied);
+        }
+        // Migrating a task that is currently executing would require a
+        // stop-the-world handshake with the source CPU. Report that
+        // explicitly rather than enqueueing a second runnable copy.
+        if self
+            .cpus
+            .iter()
+            .any(|state| state.current.as_ref().map(|running| running.id) == Some(task_id))
+        {
+            return Err(MigrateError::TaskRunning);
+        }
+
+        let source = self.take_queued_task(task_id).map(|(cpu, _)| cpu);
         let mut pinned = self.pinned_to.lock();
         pinned.insert(task_id, dst);
         drop(pinned);
-        let mut aff = self.affinity.lock();
-        aff.insert(task_id, AffinityMask::pinned(dst));
-        drop(aff);
-        self.requeue_task_on(task_id, dst);
-        let from = current_cpu();
-        if from != dst {
+        self.cpus[dst.index()].run_queue.enqueue(task);
+        if let Some(from) = source.flatten() {
+            if from == dst {
+                return Ok(());
+            }
             self.cpus[from.index()].migrations_out =
                 self.cpus[from.index()].migrations_out.wrapping_add(1);
             self.cpus[dst.index()].migrations_in =
@@ -328,10 +393,12 @@ impl SmpScheduler {
 
     /// Total number of tasks (current + queued) across all CPUs.
     pub fn task_count(&self) -> usize {
-        self.cpus
-            .iter()
-            .map(|c| c.run_queue.len() + usize::from(c.current.is_some()))
-            .sum()
+        self.tasks.len()
+    }
+
+    /// Number of logical CPUs managed by this scheduler instance.
+    pub fn online_cpus(&self) -> usize {
+        self.cpu_count
     }
 
     /// Read-only view of a single CPU's state.
@@ -355,13 +422,22 @@ impl SmpScheduler {
 
     /// Internal: pick the least-loaded CPU whose affinity allows it.
     fn pick_target_cpu(&self, mask: AffinityMask) -> Option<CpuId> {
+        // Rotate the starting point on every placement so equally-loaded
+        // CPUs receive tasks round-robin instead of always favouring the
+        // lowest-numbered one.
+        let mut rotation = self.next_placement.lock();
+        let start = (*rotation as usize) % MAX_CPUS;
+        *rotation = rotation.wrapping_add(1);
+        drop(rotation);
+
         let mut best: Option<(CpuId, usize)> = None;
-        for cpu in CpuId::all() {
+        for offset in 0..MAX_CPUS {
+            let cpu = CpuId(((start + offset) % MAX_CPUS) as u32);
             if !mask.allows(cpu) {
                 continue;
             }
             // Skip CPUs that haven't been brought online yet.
-            if (cpu.0 as usize) >= crate::cpu::cpu_count() as usize {
+            if (cpu.0 as usize) >= self.cpu_count {
                 continue;
             }
             let len = self.cpus[cpu.index()].run_queue.len();
@@ -373,34 +449,51 @@ impl SmpScheduler {
         best.map(|(c, _)| c)
     }
 
-    /// Internal: locate a task by id and re-queue it on `dst`. The
-    /// search walks the local queue of every CPU plus the global
-    /// overflow queue. This is O(n) and only used during wakeups.
-    fn requeue_task_on(&mut self, task_id: u32, dst: CpuId) {
-        if (dst.0 as usize) >= MAX_CPUS {
-            return;
+    /// Returns `true` when `task_id` is running or already enqueued on
+    /// any CPU. A task may appear at most once across all runnable
+    /// structures.
+    fn task_is_queued(&self, task_id: u32) -> bool {
+        if self.cpus.iter().any(|state| {
+            state.current.as_ref().map(|task| task.id) == Some(task_id)
+                || state.run_queue.iter_ids().contains(&task_id)
+        }) {
+            return true;
         }
-        // First, drain the global queue and look for the task there.
-        if let Some(t) = extract_task(&mut *self.global.lock(), task_id) {
-            self.cpus[dst.index()].run_queue.enqueue(t);
-            return;
+        self.global.lock().iter_ids().contains(&task_id)
+    }
+
+    /// Remove a queued task from whichever CPU queue (or the global
+    /// overflow queue) currently owns it. `None` means the task is not
+    /// queued; the outer `Option` distinguishes "not queued" from the
+    /// inner `None` meaning "global overflow queue".
+    fn take_queued_task(&mut self, task_id: u32) -> Option<(Option<CpuId>, ScheduledTask)> {
+        if let Some(task) = extract_task(&mut self.global.lock(), task_id) {
+            return Some((None, task));
         }
-        // Otherwise walk each CPU's local queue (skip dst).
-        for i in 0..MAX_CPUS {
-            if i == dst.index() {
-                continue;
+        for cpu in 0..MAX_CPUS {
+            if let Some(task) = extract_task(&mut self.cpus[cpu].run_queue, task_id) {
+                return Some((Some(CpuId(cpu as u32)), task));
             }
-            let extracted = extract_task(&mut self.cpus[i].run_queue, task_id);
-            if let Some(t) = extracted {
-                self.cpus[dst.index()].run_queue.enqueue(t);
-                return;
-            }
         }
+        None
     }
 
     /// Internal: one pass of the load balancer.
+    ///
+    /// Migrates at most one task from the busiest CPU to the least busy
+    /// one, but only when the imbalance reaches [`MIGRATION_THRESHOLD`]
+    /// **and** the chosen task is actually allowed to run on the
+    /// destination.
+    ///
+    /// Earlier revisions dequeued the busiest CPU's head task
+    /// unconditionally and then rewrote its affinity to the destination.
+    /// That violated two documented guarantees at once: a task pinned
+    /// with [`AffinityMask::pinned`] could be moved off its CPU, and its
+    /// affinity mask was silently overwritten to match wherever the
+    /// balancer happened to put it. Pinned tasks must never migrate; only
+    /// tasks whose mask permits the destination are candidates.
     pub fn balance_load(&mut self) {
-        let online = crate::cpu::cpu_count() as usize;
+        let online = self.cpu_count;
         if online < 2 {
             return;
         }
@@ -420,26 +513,52 @@ impl SmpScheduler {
                 least_len = len;
             }
         }
-        if let (Some(b), Some(l)) = (busiest, least) {
-            if b == l {
-                return;
-            }
-            if busiest_len.saturating_sub(least_len) >= MIGRATION_THRESHOLD {
-                // Migrate one task from b to l, respecting affinity.
-                if let Some(task) = self.cpus[b.index()].run_queue.dequeue() {
-                    self.cpus[b.index()].migrations_out =
-                        self.cpus[b.index()].migrations_out.wrapping_add(1);
-                    self.cpus[l.index()].migrations_in =
-                        self.cpus[l.index()].migrations_in.wrapping_add(1);
-                    let id = task.id;
-                    self.cpus[l.index()].run_queue.enqueue(task);
-                    self.pinned_to.lock().insert(id, l);
-                    self.affinity
-                        .lock()
-                        .insert(id, AffinityMask::pinned(l));
-                }
-            }
+        let (Some(b), Some(l)) = (busiest, least) else {
+            return;
+        };
+        if b == l {
+            return;
         }
+        if busiest_len.saturating_sub(least_len) < MIGRATION_THRESHOLD {
+            return;
+        }
+
+        // Collect the busiest CPU's runnable tasks and the per-task
+        // affinity masks before mutating anything, so the borrow of
+        // `self.cpus` does not overlap the affinity locks.
+        let candidates: Vec<(u32, AffinityMask)> = {
+            let q = &self.cpus[b.index()].run_queue;
+            let aff = self.affinity.lock();
+            let ids: Vec<u32> = q.iter_ids();
+            ids.into_iter()
+                .map(|id| (id, aff.get(&id).copied().unwrap_or(AffinityMask::ANY)))
+                .collect()
+            // Drop the affinity guard before we start moving tasks.
+        };
+
+        // Pick the first task the destination is allowed to run. Pinned
+        // tasks (`AffinityMask::pinned(other)`) are skipped, which is what
+        // keeps them on their CPU.
+        let Some(victim) = candidates
+            .into_iter()
+            .find(|(_, mask)| mask.allows(l))
+            .map(|(id, _)| id)
+        else {
+            // Everything on the busiest CPU is pinned there; balancing is
+            // impossible without violating affinity. Leave the layout as is.
+            return;
+        };
+
+        let Some(task) = self.cpus[b.index()].run_queue.remove(victim) else {
+            return;
+        };
+        self.cpus[b.index()].migrations_out = self.cpus[b.index()].migrations_out.wrapping_add(1);
+        self.cpus[l.index()].migrations_in = self.cpus[l.index()].migrations_in.wrapping_add(1);
+        self.cpus[l.index()].run_queue.enqueue(task);
+        // NOTE: deliberately no affinity rewrite. The balancer moves a task
+        // only where its existing mask already permits it, so the mask
+        // stays valid and the task remains migratable in future passes.
+        self.pinned_to.lock().insert(victim, l);
     }
 }
 
@@ -450,6 +569,11 @@ pub enum MigrateError {
     InvalidCpu,
     /// The task is not currently scheduled.
     NotFound,
+    /// The task's affinity mask does not include the destination CPU.
+    AffinityDenied,
+    /// The task is currently executing and must be stopped before it
+    /// can be moved.
+    TaskRunning,
 }
 
 /// Snapshot of a single CPU's state.
@@ -498,6 +622,37 @@ pub fn configure_smp(n: u32) {
 #[allow(dead_code)]
 fn _priority_in_range(p: Priority) -> bool {
     (p.0 as usize) < 32
+}
+
+// Re-export `SchedulerPolicy` so the global SMP layer can use the
+// same enum as the single-core scheduler.
+pub use crate::scheduler::SchedulerPolicy as SmpPolicy;
+
+#[allow(dead_code)]
+const _SCHEDULER_POLICY_CHECK: SchedulerPolicy = SchedulerPolicy::PriorityRR;
+
+#[allow(dead_code)]
+fn _ipi_reason_sendable(r: IpiReason) -> u32 {
+    r as u32
+}
+
+/// Drain `q` looking for a task whose id matches `task_id`. If found,
+/// the task is removed and returned. The remaining tasks are put
+/// back into `q` in their original order.
+fn extract_task(q: &mut ReadyQueue, task_id: u32) -> Option<ScheduledTask> {
+    let mut stash: Vec<ScheduledTask> = Vec::new();
+    let mut found: Option<ScheduledTask> = None;
+    while let Some(t) = q.dequeue() {
+        if t.id == task_id && found.is_none() {
+            found = Some(t);
+        } else {
+            stash.push(t);
+        }
+    }
+    for t in stash {
+        q.enqueue(t);
+    }
+    found
 }
 
 #[cfg(test)]
@@ -561,8 +716,71 @@ mod tests {
         // Move to CPU 1.
         s.migrate(1, CpuId(1)).unwrap();
         assert_eq!(s.current_task(CpuId(1)), None); // not yet running
-        // The task is on CPU 1's queue.
+                                                    // The task is on CPU 1's queue.
         assert_eq!(s.snapshot()[1].run_queue_len, 1);
+    }
+
+    #[test]
+    fn tick_reports_real_previous_task() {
+        set_cpu_count(1);
+        let mut s = SmpScheduler::new(1, &[100]);
+        s.add_task(task(1, 1));
+        s.add_task(task(2, 5));
+        assert_eq!(
+            s.tick(),
+            SmpOutcome::LocalSwitch {
+                cpu: CpuId(0),
+                prev: 0,
+                next: 1
+            }
+        );
+        assert_eq!(
+            s.tick(),
+            SmpOutcome::LocalSwitch {
+                cpu: CpuId(0),
+                prev: 1,
+                next: 2
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_make_ready_does_not_duplicate_queue_entry() {
+        set_cpu_count(1);
+        let mut s = SmpScheduler::new(1, &[100]);
+        s.add_task(task(1, 5));
+        let before = s.snapshot()[0].run_queue_len;
+        s.make_ready(1);
+        s.make_ready(1);
+        assert_eq!(s.snapshot()[0].run_queue_len, before);
+    }
+
+    #[test]
+    fn blocked_task_can_be_made_ready_again() {
+        set_cpu_count(1);
+        let mut s = SmpScheduler::new(1, &[100]);
+        s.add_task(task(1, 5));
+        assert!(s.cpus[0].run_queue.remove(1).is_some());
+        assert_eq!(s.snapshot()[0].run_queue_len, 0);
+        s.make_ready(1);
+        assert_eq!(s.snapshot()[0].run_queue_len, 1);
+    }
+
+    #[test]
+    fn migrate_unknown_task_is_not_found() {
+        set_cpu_count(2);
+        let mut s = SmpScheduler::new(2, &[100, 101]);
+        assert_eq!(s.migrate(99, CpuId(1)), Err(MigrateError::NotFound));
+    }
+
+    #[test]
+    fn migrate_respects_existing_affinity() {
+        set_cpu_count(2);
+        let mut s = SmpScheduler::new(2, &[100, 101]);
+        s.add_task_with_affinity(task(1, 5), AffinityMask::pinned(CpuId(0)));
+        assert_eq!(s.migrate(1, CpuId(1)), Err(MigrateError::AffinityDenied));
+        assert_eq!(s.snapshot()[0].run_queue_len, 1);
+        assert_eq!(s.snapshot()[1].run_queue_len, 0);
     }
 
     #[test]
@@ -586,35 +804,4 @@ mod tests {
         }
         assert_eq!(s.task_count(), 6);
     }
-}
-
-// Re-export `SchedulerPolicy` so the global SMP layer can use the
-// same enum as the single-core scheduler.
-pub use crate::scheduler::SchedulerPolicy as SmpPolicy;
-
-#[allow(dead_code)]
-const _SCHEDULER_POLICY_CHECK: SchedulerPolicy = SchedulerPolicy::PriorityRR;
-
-#[allow(dead_code)]
-fn _ipi_reason_sendable(r: IpiReason) -> u32 {
-    r as u32
-}
-
-/// Drain `q` looking for a task whose id matches `task_id`. If found,
-/// the task is removed and returned. The remaining tasks are put
-/// back into `q` in their original order.
-fn extract_task(q: &mut ReadyQueue, task_id: u32) -> Option<ScheduledTask> {
-    let mut stash: Vec<ScheduledTask> = Vec::new();
-    let mut found: Option<ScheduledTask> = None;
-    while let Some(t) = q.dequeue() {
-        if t.id == task_id && found.is_none() {
-            found = Some(t);
-        } else {
-            stash.push(t);
-        }
-    }
-    for t in stash {
-        q.enqueue(t);
-    }
-    found
 }

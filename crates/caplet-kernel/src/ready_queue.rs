@@ -93,6 +93,17 @@ impl ReadyQueue {
         let bit_pos = self.priority_bitmap.leading_zeros();
         Some(Priority::new(31 - bit_pos as u8))
     }
+
+    /// Snapshot the ids of the tasks currently in the queue.
+    ///
+    /// Provided for callers that need to inspect candidates *before*
+    /// mutating the queue — notably the SMP load balancer, which must
+    /// consult per-task affinity before deciding which task (if any) may
+    /// be migrated. `BinaryHeap` offers no stable iteration order, so the
+    /// returned order is unspecified; callers must not depend on it.
+    pub fn iter_ids(&self) -> alloc::vec::Vec<u32> {
+        self.queue.iter().map(|t| t.id).collect()
+    }
 }
 
 impl Default for ReadyQueue {

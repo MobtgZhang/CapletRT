@@ -18,29 +18,26 @@ pub struct ScheduledTask {
     /// Task priority
     pub priority: Priority,
     /// Entry point address
-    pub entry: u32,
+    pub entry: usize,
     /// Stack pointer (lowest address — Cortex-M stacks grow down)
-    pub stack_pointer: u32,
+    pub stack_pointer: usize,
     /// Stack size in bytes (used for budget enforcement and canary)
     pub stack_size: u32,
     /// Context pointer
-    pub context: u32,
+    pub context: usize,
     /// Number of times this task has been scheduled
     pub run_count: u32,
     /// Time-slice budget in ticks (0 = no time-slicing)
     pub time_slice: u32,
     /// Ticks consumed by the current slice so far
     pub time_slice_used: u32,
+    /// Process that owns this task (`None` for kernel/idle tasks).
+    pub owner_pid: Option<crate::process::ProcessId>,
 }
 
 impl ScheduledTask {
     /// Create a new scheduled task
-    pub fn new(
-        id: u32,
-        priority: Priority,
-        entry: u32,
-        stack_pointer: u32,
-    ) -> Self {
+    pub fn new(id: u32, priority: Priority, entry: usize, stack_pointer: usize) -> Self {
         Self {
             id,
             priority,
@@ -51,6 +48,7 @@ impl ScheduledTask {
             run_count: 0,
             time_slice: 0,
             time_slice_used: 0,
+            owner_pid: None,
         }
     }
 
@@ -64,8 +62,8 @@ impl ScheduledTask {
     pub fn with_time_slice(
         id: u32,
         priority: Priority,
-        entry: u32,
-        stack_pointer: u32,
+        entry: usize,
+        stack_pointer: usize,
         stack_size: u32,
         time_slice: u32,
     ) -> Self {
@@ -94,26 +92,24 @@ impl Ord for ScheduledTask {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         // Higher priority (lower number) should be `Greater` so it
         // pops first from the max-heap. We invert the comparison.
-        other.priority.0.cmp(&self.priority.0)
+        other
+            .priority
+            .0
+            .cmp(&self.priority.0)
             .then(other.id.cmp(&self.id))
     }
 }
 
 /// Scheduler policy
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SchedulerPolicy {
     /// First in, first out at same priority
     Fifo,
     /// Time-sliced round robin at same priority
     RoundRobin,
     /// Priority-based with time slicing
+    #[default]
     PriorityRR,
-}
-
-impl Default for SchedulerPolicy {
-    fn default() -> Self {
-        Self::PriorityRR
-    }
 }
 
 /// Result of a `schedule()` call: tells the caller what to do.
@@ -185,6 +181,14 @@ impl Scheduler {
 
     /// Mark a task as ready (e.g. after unblock / spawn).
     pub fn make_ready(&mut self, id: u32) {
+        if self.current.as_ref().map(|task| task.id) == Some(id)
+            || self.ready_queue.iter_ids().contains(&id)
+        {
+            // A running or already-runnable task must not acquire a
+            // second queue entry. Timer expiry and explicit wakeups can
+            // legitimately race at the API boundary.
+            return;
+        }
         if let Some(t) = self.tasks.get(&id) {
             self.ready_queue.enqueue(*t);
         }
@@ -293,6 +297,28 @@ impl Scheduler {
     /// Get the currently running task
     pub fn current_task(&self) -> Option<&ScheduledTask> {
         self.current.as_ref()
+    }
+
+    /// Look up a scheduled task by id.
+    pub fn task(&self, id: u32) -> Option<&ScheduledTask> {
+        self.tasks.get(&id)
+    }
+
+    /// Look up a scheduled task mutably.
+    pub fn task_mut(&mut self, id: u32) -> Option<&mut ScheduledTask> {
+        self.tasks.get_mut(&id)
+    }
+
+    /// Store the saved stack pointer after a context switch.
+    pub fn set_task_context(&mut self, id: u32, context: usize) {
+        if let Some(task) = self.tasks.get_mut(&id) {
+            task.context = context;
+        }
+        if let Some(current) = self.current.as_mut() {
+            if current.id == id {
+                current.context = context;
+            }
+        }
     }
 
     /// Get the number of context switches
@@ -409,7 +435,7 @@ mod tests {
         s.add_task(t);
         s.add_task(task(2, 1));
         let _ = s.schedule(); // picks 1
-        // Three ticks should expire the slice.
+                              // Three ticks should expire the slice.
         s.tick();
         s.tick();
         match s.tick() {
@@ -424,7 +450,7 @@ mod tests {
         s.add_task(task(1, 5));
         s.add_task(task(2, 5));
         let _ = s.schedule(); // picks 1
-        // Now enqueue a higher-priority task.
+                              // Now enqueue a higher-priority task.
         s.add_task(task(3, 1));
         match s.tick() {
             Some(ScheduleOutcome::Switch { next, .. }) => assert_eq!(next, 3),

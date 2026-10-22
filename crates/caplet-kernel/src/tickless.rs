@@ -7,8 +7,8 @@
 //! ISR calls [`tickless::on_tick`] to advance the kernel notion of
 //! time and wake any tasks whose deadlines have elapsed.
 //!
-//! The implementation is intentionally tiny — Phase 5 expands it to
-//! a full timer wheel. Right now the public API is just:
+//! Timer expiry itself lives in the hierarchical wheel in
+//! [`crate::syscall_timer`]. The public idle API is:
 //!
 //! * [`enter_idle`] — called by the kernel when no tasks are ready.
 //! * [`on_tick`] — called by the SysTick ISR.
@@ -16,8 +16,9 @@
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 /// Monotonically increasing tick counter, incremented on every
-/// SysTick interrupt. Backs all kernel timekeeping until Phase 5
-/// brings in a timer wheel.
+/// SysTick interrupt. Backs the tickless idle deadline arithmetic and
+/// is kept in lockstep with the kernel's 64-bit millisecond clock by
+/// `syscall_timer::increment_ticks`.
 pub static TICKS: AtomicU32 = AtomicU32::new(0);
 
 /// Read the current tick count.
@@ -79,6 +80,12 @@ pub fn set_next_deadline(deadline_ticks: u32) {
 /// Reset the deadline hint. Called when the port wakes from WFI.
 pub fn clear_next_deadline() {
     NEXT_DEADLINE_TICKS.store(0, Ordering::Release);
+}
+
+/// Absolute tick of the earliest pending timer, queried directly from
+/// the timer wheel. `None` means there are no pending timers.
+pub fn compute_idle_deadline() -> Option<u32> {
+    crate::syscall_timer::next_deadline_ticks().map(|deadline| deadline.min(u32::MAX as u64) as u32)
 }
 
 /// Diagnostics: how many times the idle task has been woken.
