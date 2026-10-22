@@ -23,9 +23,7 @@ impl TaskRef {
 
     /// Create a weak reference
     pub fn as_weak(&self) -> WeakTaskRef {
-        WeakTaskRef {
-            id: self.id,
-        }
+        WeakTaskRef { id: self.id }
     }
 
     /// Get the task ID

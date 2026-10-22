@@ -1,9 +1,9 @@
 //! Task definition
 
-use crate::task_id::TaskId;
 use crate::task_config::TaskConfig;
-use crate::task_state::{TaskState, TaskPriority};
 use crate::task_context::TaskControlBlock;
+use crate::task_id::TaskId;
+use crate::task_state::{TaskPriority, TaskState};
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;

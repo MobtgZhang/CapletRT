@@ -60,9 +60,10 @@ impl From<TaskPriority> for u8 {
 }
 
 /// Task state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TaskState {
     /// Task is created but not yet started
+    #[default]
     Created,
     /// Task is ready to run
     Ready,
@@ -97,12 +98,6 @@ impl TaskState {
     /// Check if task is blocked
     pub fn is_blocked(&self) -> bool {
         matches!(self, TaskState::Blocked | TaskState::Waiting)
-    }
-}
-
-impl Default for TaskState {
-    fn default() -> Self {
-        TaskState::Created
     }
 }
 

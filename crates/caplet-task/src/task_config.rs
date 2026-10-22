@@ -17,6 +17,12 @@ pub struct TaskConfig {
     autostart: bool,
     /// CPU affinity mask (for multi-core)
     cpu_affinity: u8,
+    /// Heap memory budget in bytes.
+    memory_budget: usize,
+    /// Message quota per one-second epoch.
+    message_quota: u32,
+    /// CPU time quota per epoch, in microseconds.
+    cpu_quota_per_epoch: u32,
 }
 
 impl TaskConfig {
@@ -61,6 +67,24 @@ impl TaskConfig {
         self
     }
 
+    /// Set the heap memory budget in bytes.
+    pub fn with_memory_budget(mut self, bytes: usize) -> Self {
+        self.memory_budget = bytes;
+        self
+    }
+
+    /// Set the message quota per one-second epoch.
+    pub fn with_message_quota(mut self, messages: u32) -> Self {
+        self.message_quota = messages;
+        self
+    }
+
+    /// Set the CPU-time quota per epoch in microseconds.
+    pub fn with_cpu_quota(mut self, micros: u32) -> Self {
+        self.cpu_quota_per_epoch = micros;
+        self
+    }
+
     /// Get priority
     pub fn priority(&self) -> TaskPriority {
         self.priority
@@ -90,6 +114,21 @@ impl TaskConfig {
     pub fn cpu_affinity(&self) -> u8 {
         self.cpu_affinity
     }
+
+    /// Get the heap memory budget in bytes.
+    pub fn memory_budget(&self) -> usize {
+        self.memory_budget
+    }
+
+    /// Get the message quota per one-second epoch.
+    pub fn message_quota(&self) -> u32 {
+        self.message_quota
+    }
+
+    /// Get the CPU-time quota per epoch in microseconds.
+    pub fn cpu_quota(&self) -> u32 {
+        self.cpu_quota_per_epoch
+    }
 }
 
 impl Default for TaskConfig {
@@ -101,6 +140,9 @@ impl Default for TaskConfig {
             preemptible: true,
             autostart: true,
             cpu_affinity: 0,
+            memory_budget: 1024,
+            message_quota: 100,
+            cpu_quota_per_epoch: 10_000,
         }
     }
 }
@@ -152,10 +194,53 @@ impl TaskConfigBuilder {
         self.config = self.config.with_autostart(value);
         self
     }
+
+    /// Set the heap memory budget in bytes.
+    pub fn memory_budget(mut self, bytes: usize) -> Self {
+        self.config = self.config.with_memory_budget(bytes);
+        self
+    }
+
+    /// Set the message quota per one-second epoch.
+    pub fn message_quota(mut self, messages: u32) -> Self {
+        self.config = self.config.with_message_quota(messages);
+        self
+    }
+
+    /// Set the CPU-time quota per epoch in microseconds.
+    pub fn cpu_quota(mut self, micros: u32) -> Self {
+        self.config = self.config.with_cpu_quota(micros);
+        self
+    }
 }
 
 impl Default for TaskConfigBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quota_defaults_match_budget_defaults() {
+        let cfg = TaskConfig::default();
+        assert_eq!(cfg.memory_budget(), 1024);
+        assert_eq!(cfg.message_quota(), 100);
+        assert_eq!(cfg.cpu_quota(), 10_000);
+    }
+
+    #[test]
+    fn builders_forward_quota_limits() {
+        let cfg = TaskConfigBuilder::new()
+            .memory_budget(4096)
+            .message_quota(32)
+            .cpu_quota(2500)
+            .build();
+        assert_eq!(cfg.memory_budget(), 4096);
+        assert_eq!(cfg.message_quota(), 32);
+        assert_eq!(cfg.cpu_quota(), 2500);
     }
 }

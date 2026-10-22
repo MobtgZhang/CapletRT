@@ -9,3 +9,4 @@ authors.workspace = true
 [dependencies]
 caplet-cap = { path = "../caplet-cap" }
 hashbrown.workspace = true
+linkme.workspace = true

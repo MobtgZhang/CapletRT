@@ -58,6 +58,24 @@ impl<F: Future<Output = ()>> TaskBuilder<F> {
         self
     }
 
+    /// Set the heap memory budget in bytes.
+    pub fn memory_budget(mut self, bytes: usize) -> Self {
+        self.config = self.config.with_memory_budget(bytes);
+        self
+    }
+
+    /// Set the message quota per one-second epoch.
+    pub fn message_quota(mut self, messages: u32) -> Self {
+        self.config = self.config.with_message_quota(messages);
+        self
+    }
+
+    /// Set the CPU-time quota per epoch in microseconds.
+    pub fn cpu_quota(mut self, micros: u32) -> Self {
+        self.config = self.config.with_cpu_quota(micros);
+        self
+    }
+
     /// Build the task
     pub fn build(self, id: TaskId) -> Task<F> {
         Task::new(id, self.config, self.future.unwrap(), self.name)

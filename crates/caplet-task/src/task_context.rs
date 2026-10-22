@@ -1,13 +1,13 @@
 //! Task context management
 
 use crate::task_id::TaskId;
-use crate::task_state::{TaskState, TaskPriority};
+use crate::task_state::{TaskPriority, TaskState};
 
 /// Saved task context
 ///
 /// This structure holds the minimum state needed to suspend and resume a task.
 /// On Cortex-M, this maps to the stack frame layout.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TaskContext {
     /// Stack pointer value
     pub sp: u32,
@@ -28,7 +28,7 @@ impl TaskContext {
             sp,
             pc: entry,
             lr: 0xFFFFFFFD, // Return to thread mode, PSP
-            r: [0; 13],
+            r: [arg, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             xpsr: 0x01000000, // Default PSR (Thumb bit set)
         }
     }
@@ -46,18 +46,6 @@ impl TaskContext {
     /// Check if the context is valid (has a valid stack)
     pub fn is_valid(&self) -> bool {
         self.sp != 0 && self.pc != 0
-    }
-}
-
-impl Default for TaskContext {
-    fn default() -> Self {
-        Self {
-            sp: 0,
-            pc: 0,
-            lr: 0,
-            r: [0; 13],
-            xpsr: 0,
-        }
     }
 }
 
