@@ -17,7 +17,9 @@ use std::time::Instant;
 /// Time a closure `iters` times and return ns/op.
 pub fn time<F: FnMut()>(iters: u64, mut f: F) -> u64 {
     let start = Instant::now();
-    for _ in 0..iters { f(); }
+    for _ in 0..iters {
+        f();
+    }
     let elapsed = start.elapsed();
     elapsed.as_nanos() as u64 / iters.max(1)
 }
@@ -37,7 +39,10 @@ macro_rules! report {
             $name, ns, budget, status
         );
         if ns > budget {
-            eprintln!("performance gate FAILED: {} ({} ns > {} ns)", $name, ns, budget);
+            eprintln!(
+                "performance gate FAILED: {} ({} ns > {} ns)",
+                $name, ns, budget
+            );
             std::process::exit(2);
         }
     }};

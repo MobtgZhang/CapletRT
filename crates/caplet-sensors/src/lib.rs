@@ -14,6 +14,8 @@ extern crate alloc;
 /// dependent — see each sensor's documentation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Reading {
+    /// Stable device identifier (NUL-padded ASCII, at most 16 bytes).
+    pub device_id: [u8; 16],
     /// Sensor value (interpreted by the concrete type).
     pub value: f32,
     /// Timestamp in milliseconds since boot.
@@ -38,6 +40,8 @@ pub trait Sensor {
 pub struct MockSensor {
     /// Sensor name.
     pub name: alloc::string::String,
+    /// Name supplied through the allocation-free constructor.
+    static_name: Option<&'static str>,
     /// Current value (mutated by the test harness).
     pub value: core::cell::Cell<f32>,
 }
@@ -47,6 +51,7 @@ impl MockSensor {
     pub fn new(name: &str, initial: f32) -> Self {
         Self {
             name: alloc::string::String::from(name),
+            static_name: None,
             value: core::cell::Cell::new(initial),
         }
     }
@@ -55,11 +60,9 @@ impl MockSensor {
     /// needed by [`Self::new`]. Useful for `static` items
     /// where `String::from` is not available.
     pub const fn new_init(name: &'static str, initial: f32) -> Self {
-        // The `name` field is owned `String`, but we have a
-        // `'static` reference and we will never observe the
-        // difference in a const context.
         Self {
             name: alloc::string::String::new(),
+            static_name: Some(name),
             value: core::cell::Cell::new(initial),
         }
     }
@@ -72,10 +75,15 @@ impl MockSensor {
 
 impl Sensor for MockSensor {
     fn name(&self) -> &str {
-        &self.name
+        self.static_name.unwrap_or(&self.name)
     }
     fn read(&self) -> Reading {
+        let mut device_id = [0u8; 16];
+        let bytes = self.name().as_bytes();
+        let len = bytes.len().min(device_id.len());
+        device_id[..len].copy_from_slice(&bytes[..len]);
         Reading {
+            device_id,
             value: self.value.get(),
             timestamp_ms: 0,
         }
@@ -129,13 +137,7 @@ impl Tmp102 {
     /// effective resolution is 0.0625 °C.
     pub fn encode_temperature(t: f32) -> u16 {
         // Clamp to the supported range.
-        let t_clamped = if t > 127.0 {
-            127.0
-        } else if t < -55.0 {
-            -55.0
-        } else {
-            t
-        };
+        let t_clamped = t.clamp(-55.0, 127.0);
         let scaled = (t_clamped / 0.0625) as i16;
         ((scaled as u16) << 4) & 0xFFF0
     }
@@ -159,7 +161,10 @@ impl Sensor for Tmp102 {
         "tmp102"
     }
     fn read(&self) -> Reading {
+        let mut device_id = [0u8; 16];
+        device_id[..6].copy_from_slice(b"tmp102");
         Reading {
+            device_id,
             value: self.temperature.get(),
             timestamp_ms: 0,
         }
@@ -176,9 +181,18 @@ mod tests {
     #[test]
     fn mock_sensor_basic() {
         let s = MockSensor::new("mock", 23.5);
+        assert_eq!(s.name(), "mock");
+        assert_eq!(&s.read().device_id[..4], b"mock");
         assert_eq!(s.read().value, 23.5);
         s.set_value(24.0);
         assert_eq!(s.read().value, 24.0);
+    }
+
+    #[test]
+    fn mock_sensor_const_constructor_keeps_name() {
+        let sensor = MockSensor::new_init("mock-temp", 22.0);
+        assert_eq!(sensor.name(), "mock-temp");
+        assert_eq!(&sensor.read().device_id[..9], b"mock-temp");
     }
 
     #[test]
