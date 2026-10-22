@@ -14,7 +14,6 @@
 //! audit / debugging.
 
 extern crate alloc;
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -42,6 +41,56 @@ impl EndpointName {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EndpointHandle(pub u32);
 
+/// Namespace-local endpoint name table.
+///
+/// Namespace endpoint sets are small and bounded.  A linear table avoids the
+/// large, hard-to-bound control-flow graph of a tree map while preserving the
+/// map operations the kernel needs: unique-name registration and lookup.
+#[derive(Debug, Default)]
+pub struct EndpointTable {
+    entries: Vec<(EndpointName, EndpointHandle)>,
+}
+
+impl EndpointTable {
+    /// Create an empty endpoint table.
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Return whether `name` is already registered.
+    pub fn contains_key(&self, name: &EndpointName) -> bool {
+        self.entries.iter().any(|(key, _)| key == name)
+    }
+
+    /// Insert or replace an endpoint, returning the previous handle.
+    pub fn insert(&mut self, name: EndpointName, handle: EndpointHandle) -> Option<EndpointHandle> {
+        if let Some((_, existing)) = self.entries.iter_mut().find(|(key, _)| key == &name) {
+            return Some(core::mem::replace(existing, handle));
+        }
+        self.entries.push((name, handle));
+        None
+    }
+
+    /// Look up an endpoint by name.
+    pub fn get(&self, name: &EndpointName) -> Option<&EndpointHandle> {
+        self.entries
+            .iter()
+            .find_map(|(key, handle)| (key == name).then_some(handle))
+    }
+
+    /// Number of registered endpoints.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Return whether the table has no endpoints.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// An IPC namespace.
 ///
 /// The namespace owns its endpoint set, an allowlist of publishers
@@ -55,7 +104,7 @@ pub struct IpcNamespace {
     /// Parent namespace id. `None` for the root namespace.
     pub parent: Option<NamespaceId>,
     /// Endpoints registered in this namespace, keyed by name.
-    pub endpoints: BTreeMap<EndpointName, EndpointHandle>,
+    pub endpoints: EndpointTable,
     /// Process ids allowed to publish into this namespace.
     pub allowed_publishers: Vec<ProcessId>,
     /// Process ids allowed to subscribe to this namespace.
@@ -69,15 +118,23 @@ impl IpcNamespace {
             id,
             name,
             parent,
-            endpoints: BTreeMap::new(),
+            endpoints: EndpointTable::new(),
             allowed_publishers: Vec::new(),
             allowed_subscribers: Vec::new(),
         }
     }
 
-    /// Register an endpoint. Overwrites if the name already exists.
-    pub fn register(&mut self, name: EndpointName, handle: EndpointHandle) {
+    /// Register an endpoint.
+    ///
+    /// Returns `false` when the name is already registered.  Endpoint names
+    /// are capability identities: silently replacing one would let a second
+    /// process redirect traffic that was authorized for the first owner.
+    pub fn register(&mut self, name: EndpointName, handle: EndpointHandle) -> bool {
+        if self.endpoints.contains_key(&name) {
+            return false;
+        }
         self.endpoints.insert(name, handle);
+        true
     }
 
     /// Look up an endpoint by name. Walks up to the parent if the
@@ -99,8 +156,9 @@ impl IpcNamespace {
 
 /// Tree of namespaces. Stored in the kernel's `namespaces` table.
 pub struct NamespaceTree {
-    /// All namespaces, keyed by id. The root has `parent = None`.
-    pub by_id: BTreeMap<NamespaceId, IpcNamespace>,
+    /// All namespaces indexed by their dense, monotonically allocated id.
+    /// The root has `parent = None` and lives at index zero.
+    by_id: Vec<Option<IpcNamespace>>,
     /// Next namespace id to hand out.
     next_id: u32,
 }
@@ -108,13 +166,11 @@ pub struct NamespaceTree {
 impl NamespaceTree {
     /// Create a new tree with a single root namespace.
     pub fn new() -> Self {
-        let mut tree = Self {
-            by_id: BTreeMap::new(),
-            next_id: 1,
-        };
         let root = IpcNamespace::new(NamespaceId(0), String::from("root"), None);
-        tree.by_id.insert(NamespaceId(0), root);
-        tree
+        Self {
+            by_id: alloc::vec![Some(root)],
+            next_id: 1,
+        }
     }
 
     /// Allocate a new namespace id.
@@ -126,17 +182,27 @@ impl NamespaceTree {
 
     /// Insert a namespace into the tree.
     pub fn insert(&mut self, ns: IpcNamespace) {
-        self.by_id.insert(ns.id, ns);
+        let index = ns.id.0 as usize;
+        if index >= self.by_id.len() {
+            self.by_id.resize_with(index + 1, || None);
+        }
+        self.by_id[index] = Some(ns);
+    }
+
+    /// Remove a namespace.  Kernel-only rollback helper used when granting
+    /// the creator's capability fails after the id has been allocated.
+    pub fn remove(&mut self, id: NamespaceId) -> Option<IpcNamespace> {
+        self.by_id.get_mut(id.0 as usize)?.take()
     }
 
     /// Look up a namespace by id.
     pub fn get(&self, id: NamespaceId) -> Option<&IpcNamespace> {
-        self.by_id.get(&id)
+        self.by_id.get(id.0 as usize)?.as_ref()
     }
 
     /// Look up a namespace by id mutably.
     pub fn get_mut(&mut self, id: NamespaceId) -> Option<&mut IpcNamespace> {
-        self.by_id.get_mut(&id)
+        self.by_id.get_mut(id.0 as usize)?.as_mut()
     }
 
     /// Walk up the parent chain to find an endpoint. Returns the
@@ -148,7 +214,7 @@ impl NamespaceTree {
     ) -> Option<(NamespaceId, EndpointHandle)> {
         let mut cur = Some(start);
         while let Some(id) = cur {
-            if let Some(ns) = self.by_id.get(&id) {
+            if let Some(ns) = self.get(id) {
                 if let Some(h) = ns.lookup(name) {
                     return Some((id, h));
                 }
@@ -229,7 +295,7 @@ mod tests {
     #[test]
     fn walk_to_parent() {
         let mut tree = NamespaceTree::new();
-        let mut root = tree.get_mut(NamespaceId(0)).unwrap();
+        let root = tree.get_mut(NamespaceId(0)).unwrap();
         root.register(EndpointName::from_static("root-svc"), EndpointHandle(1));
         let mut child = IpcNamespace::new(NamespaceId(1), "child".into(), Some(NamespaceId(0)));
         child.register(EndpointName::from_static("child-svc"), EndpointHandle(2));
