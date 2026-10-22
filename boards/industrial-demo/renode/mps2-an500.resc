@@ -1,0 +1,8 @@
+# Renode boot script for industrial-demo.
+mach create "industrial-demo"
+machine LoadPlatformDescription @REPL@
+sysbus LoadELF @ELF@
+sysbus.cpu.semihosting.uart CreateFileBackend @OUT@
+start
+sleep 3
+quit
