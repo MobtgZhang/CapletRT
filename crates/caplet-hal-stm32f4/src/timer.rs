@@ -1,7 +1,7 @@
 //! General-purpose timer (TIM2..TIM5, TIM9..TIM11)
 
 use crate::raw::{self, f446};
-use caplet_hal::timer::{Timer, TimerConfig};
+use caplet_hal::timer::{Timer, TimerConfig, TimerRunMode};
 use caplet_hal::HalError;
 
 /// Microseconds-based timer.
@@ -15,6 +15,10 @@ unsafe impl Send for StmTimer {}
 
 impl StmTimer {
     /// Take TIM2.
+    ///
+    /// # Safety
+    /// The caller must ensure TIM2 is not owned elsewhere and that its APB
+    /// clock is enabled (`clock_hz` must match the actual timer clock).
     pub unsafe fn tim2(clock_hz: u32) -> Self {
         Self {
             base: f446::TIM2 as *mut raw::TimBlock,
@@ -23,6 +27,10 @@ impl StmTimer {
     }
 
     /// Take TIM3.
+    ///
+    /// # Safety
+    /// The caller must ensure TIM3 is not owned elsewhere and that its APB
+    /// clock is enabled (`clock_hz` must match the actual timer clock).
     pub unsafe fn tim3(clock_hz: u32) -> Self {
         Self {
             base: f446::TIM3 as *mut raw::TimBlock,
@@ -57,9 +65,10 @@ impl Timer for StmTimer {
         // Convert period (us) → target ticks at this clock.
         let target = self.clock_hz / 1_000_000 * config.period_us.max(1);
         let psc = (self.clock_hz / target / 65_536).max(1) - 1;
-        let arr = target / (psc as u32 + 1);
+        let arr = target / (psc + 1);
         self.set_prescaler(psc as u16)?;
         self.set_auto_reload(arr)?;
+        self.set_run_mode(config.mode)?;
         Ok(())
     }
 
@@ -89,10 +98,7 @@ impl Timer for StmTimer {
     }
 
     fn set_period(&mut self, period_us: u32) -> Result<(), Self::Error> {
-        self.configure(TimerConfig {
-            period_us,
-            auto_reload: true,
-        })
+        self.configure(TimerConfig::periodic(period_us))
     }
 
     fn enable_interrupt(&mut self) -> Result<(), Self::Error> {
@@ -118,5 +124,24 @@ impl Timer for StmTimer {
 
     fn is_interrupt_pending(&self) -> bool {
         unsafe { (raw::read32(self.base as usize + 0x10) & 0x1) != 0 }
+    }
+
+    fn set_run_mode(&mut self, mode: TimerRunMode) -> Result<(), Self::Error> {
+        // STM32 TIMx CR1.OPM (bit 3): stop after the next update event.
+        unsafe {
+            match mode {
+                TimerRunMode::OneShot => raw::set_bits(self.base as usize, 1 << 3),
+                TimerRunMode::Periodic => raw::clear_bits(self.base as usize, 1 << 3),
+            }
+        }
+        Ok(())
+    }
+
+    fn set_deadline_ticks(&mut self, deadline_ticks: u32) -> Result<(), Self::Error> {
+        let now = self.now_ticks();
+        let delta = deadline_ticks.saturating_sub(now).max(1);
+        self.set_auto_reload(delta)?;
+        self.set_run_mode(TimerRunMode::OneShot)?;
+        self.start()
     }
 }

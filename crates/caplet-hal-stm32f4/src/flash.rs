@@ -12,6 +12,11 @@ unsafe impl Send for Flash {}
 
 impl Flash {
     /// Take the singleton.
+    ///
+    /// # Safety
+    /// The caller must ensure this is the only live owner of the FLASH
+    /// controller and that the flash latency change is safe for the current
+    /// core clock and supply voltage.
     pub unsafe fn take() -> Self {
         Self {
             base: f446::FLASH as *mut raw::FlashBlock,

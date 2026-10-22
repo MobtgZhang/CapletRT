@@ -16,20 +16,28 @@
 #![allow(unsafe_code)]
 #![deny(missing_docs)]
 
-pub mod raw;
-pub mod uart;
-pub mod gpio;
-pub mod timer;
-pub mod rcc;
-pub mod flash;
-pub mod phy_dp83848;
+extern crate alloc;
 
-pub use uart::Usart;
-pub use gpio::{Pin, PinRef, Port, PortMode};
-pub use timer::StmTimer;
-pub use rcc::Rcc;
+pub mod flash;
+pub mod gpio;
+pub mod i2c;
+pub mod irq;
+pub mod phy_dp83848;
+pub mod raw;
+pub mod rcc;
+pub mod spi;
+pub mod timer;
+pub mod uart;
+
 pub use flash::Flash;
+pub use gpio::{Pin, PinRef, Port, PortMode};
+pub use i2c::I2cMaster;
+pub use irq::IrqController;
 pub use phy_dp83848::Dp83848;
+pub use rcc::Rcc;
+pub use spi::SpiMaster;
+pub use timer::StmTimer;
+pub use uart::Usart;
 
 /// Re-export of the trait root.
 pub use caplet_hal as hal;
@@ -38,8 +46,13 @@ pub use caplet_hal as hal;
 pub mod prelude {
     pub use crate::hal::{
         gpio::{GpioMode, GpioPin, GpioPort, PinState},
-        uart::{Uart, UartConfig, UartFmt},
+        i2c::{I2c, I2cConfig},
+        interrupt::{InterruptPriority, IrqHandler},
+        spi::{Spi, SpiConfig},
         timer::Timer as HalTimer,
+        uart::{Uart, UartConfig, UartFmt},
     };
-    pub use crate::{Pin, Port, PortMode, Rcc, StmTimer, Usart};
+    pub use crate::{
+        I2cMaster, IrqController, Pin, Port, PortMode, Rcc, SpiMaster, StmTimer, Usart,
+    };
 }

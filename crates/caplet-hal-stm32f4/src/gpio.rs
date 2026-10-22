@@ -1,9 +1,7 @@
 //! GPIO port + pin implementation
 
 use crate::raw::{self, f446};
-use caplet_hal::gpio::{
-    GpioMode, GpioPin, GpioPort, OutputType, PinState, PullMode, Speed,
-};
+use caplet_hal::gpio::{GpioMode, GpioPin, GpioPort, OutputType, PinState, PullMode, Speed};
 use caplet_hal::HalError;
 
 /// GPIO pin identifier (port + index 0..15).
@@ -54,6 +52,10 @@ fn port_base(port: u8) -> usize {
 
 impl Port {
     /// Take a port. `port` is the port index (0 = A, 1 = B, …).
+    ///
+    /// # Safety
+    /// The caller must ensure this is the only live owner of the GPIO
+    /// port's register block and must have enabled its RCC clock.
     pub unsafe fn take(port: u8) -> Self {
         Self {
             base: port_base(port) as *mut raw::GpioBlock,
@@ -69,7 +71,7 @@ impl Port {
             return Err(HalError::InvalidArgument);
         }
         unsafe {
-            let moder = raw::read32(self.base as usize + 0x00);
+            let moder = raw::read32(self.base as usize);
             let new_mode = match mode {
                 PortMode::Input => 0b00,
                 PortMode::Output => 0b01,
@@ -77,7 +79,7 @@ impl Port {
                 PortMode::Analog => 0b11,
             };
             let moder = (moder & !(0b11 << (p * 2))) | (new_mode << (p * 2));
-            raw::write32(self.base as usize + 0x00, moder);
+            raw::write32(self.base as usize, moder);
 
             if let PortMode::Alternate(af) = mode {
                 let af: u32 = (af & 0xF) as u32;

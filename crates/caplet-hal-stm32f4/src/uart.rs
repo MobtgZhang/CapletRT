@@ -16,6 +16,10 @@ unsafe impl Send for Usart {}
 impl Usart {
     /// Take a USART2 (which on Nucleo-F446ZE is wired to the
     /// virtual COM port on ST-Link).
+    ///
+    /// # Safety
+    /// The caller must ensure USART2 is not owned elsewhere and that
+    /// `clock_hz` matches the APB1 clock feeding the peripheral.
     pub unsafe fn usart2(clock_hz: u32) -> Self {
         Self {
             base: f446::USART2 as *mut raw::UsartBlock,
@@ -24,6 +28,10 @@ impl Usart {
     }
 
     /// Take USART1.
+    ///
+    /// # Safety
+    /// The caller must ensure USART1 is not owned elsewhere and that
+    /// `clock_hz` matches the APB2 clock feeding the peripheral.
     pub unsafe fn usart1(clock_hz: u32) -> Self {
         Self {
             base: f446::USART1 as *mut raw::UsartBlock,
@@ -43,7 +51,7 @@ impl Uart for Usart {
             // 2. Set word length (M0/M1 in CR1): 8-bit → 0.
             raw::clear_bits(base + 0x0C, 1 << 12);
             // 3. Set baud rate.
-            let brr = self.clock_hz / config.baud_rate as u32;
+            let brr = self.clock_hz / config.baud_rate;
             raw::write32(base + 0x08, brr);
             // 4. Enable transmitter and receiver.
             raw::set_bits(base + 0x0C, (1 << 3) | (1 << 2));

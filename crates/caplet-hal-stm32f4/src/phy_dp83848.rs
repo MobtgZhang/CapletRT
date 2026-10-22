@@ -93,8 +93,12 @@ impl Dp83848 {
         regs[reg::PHYID1 as usize] = (DP83848_PHY_ID >> 16) as u16;
         regs[reg::PHYID2 as usize] = (DP83848_PHY_ID & 0xFFFF) as u16;
         regs[reg::BMCR as usize] = bmcr::AN_ENABLE | bmcr::DUPLEX | bmcr::SPEED_LSB;
-        regs[reg::BMSR as usize] =
-            bmsr::BASE_TX_FD | bmsr::BASE_TX_HD | bmsr::BASE_T_FD | bmsr::BASE_T_HD | bmsr::AN_COMPLETE | bmsr::LINK_STATUS;
+        regs[reg::BMSR as usize] = bmsr::BASE_TX_FD
+            | bmsr::BASE_TX_HD
+            | bmsr::BASE_T_FD
+            | bmsr::BASE_T_HD
+            | bmsr::AN_COMPLETE
+            | bmsr::LINK_STATUS;
         regs[reg::ANAR as usize] = 0x01E1; // advertise 10/100 FD/HD
         regs[reg::ANLPAR as usize] = 0x01E1; // peer agrees
         regs[reg::PHYSTS as usize] = (1 << 2) | (1 << 1); // link + speed100 + FD
