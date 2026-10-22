@@ -73,7 +73,6 @@ pub fn state() -> JtagState {
 /// # Safety
 /// Intended for unit tests only.
 #[cfg(any(test, feature = "test-reset"))]
-#[allow(unexpected_cfgs)]
 pub unsafe fn reset_for_testing() {
     STATE.store(JtagState::Enabled as u8, Ordering::Release);
 }

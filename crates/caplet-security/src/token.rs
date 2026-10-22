@@ -41,19 +41,14 @@ impl<P> SecurityToken<P> {
     /// The caller must hold the kernel capability for
     /// allocating capability slots. The returned token is
     /// unique until the corresponding slot is revoked.
-    pub(crate) unsafe fn new() -> Self {
+    pub unsafe fn new() -> Self {
         let id = TOKEN_GEN.fetch_add(1, Ordering::Relaxed);
         let hi = id.wrapping_mul(0x9E37_79B1);
         let mid = id.wrapping_mul(0x85EB_CA77);
         let lo = id.wrapping_mul(0xC2B2_AE3D);
         let end = id.wrapping_mul(0x27D4_EB2F);
         Self {
-            nonce: CNonce {
-                hi,
-                mid,
-                lo,
-                end,
-            },
+            nonce: CNonce { hi, mid, lo, end },
             _phantom: PhantomData,
         }
     }

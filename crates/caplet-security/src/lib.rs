@@ -16,6 +16,6 @@ pub mod jtag;
 pub mod token;
 
 pub use crypto::{CryptoError, CryptoOp, CryptoToken};
-pub use flash::{FlashError, FlashToken, FlashRegion};
+pub use flash::{FlashError, FlashRegion, FlashToken};
 pub use jtag::{JtagError, JtagLock, JtagState};
 pub use token::{CNonce, SecurityToken};

@@ -14,3 +14,4 @@ caplet-sync = { path = "../caplet-sync" }
 [features]
 default = []
 hw-crypto = []
+test-reset = []
