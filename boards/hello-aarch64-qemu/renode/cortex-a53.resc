@@ -1,0 +1,9 @@
+# Render-time placeholders are substituted by tools/sim/run_renode.sh.
+mach create "cortex-a53"
+machine LoadPlatformDescription @REPL@
+cpu.timer CounterFrequencyRegister 62500000
+sysbus LoadELF @ELF@
+uart0 CreateFileBackend @OUT@
+start
+sleep 3
+quit
