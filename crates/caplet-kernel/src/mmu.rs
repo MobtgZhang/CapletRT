@@ -9,7 +9,11 @@
 //! it is running on a Cortex-M or a Cortex-A — both provide
 //! implementations of [`MmuOps`].
 
+extern crate alloc;
+
 use crate::arch::MmuConfig;
+use alloc::boxed::Box;
+use caplet_sync::SpinLock;
 
 /// Page permissions in the abstract kernel model. Mapped to
 /// architecture-specific permission bits by the port.
@@ -79,7 +83,13 @@ pub trait MmuOps {
     /// Enable the MMU with the given configuration. Idempotent.
     fn enable(&mut self, cfg: &MmuConfig);
     /// Map a region in the current process's page table.
-    fn map(&mut self, vaddr: u32, paddr: u32, size: usize, perms: PagePerms) -> Result<(), MmuError>;
+    fn map(
+        &mut self,
+        vaddr: u32,
+        paddr: u32,
+        size: usize,
+        perms: PagePerms,
+    ) -> Result<(), MmuError>;
     /// Unmap a region.
     fn unmap(&mut self, vaddr: u32, size: usize) -> Result<(), MmuError>;
     /// Invalidate the TLB for a single vaddr on this CPU. SMP
@@ -104,6 +114,41 @@ pub enum MmuError {
     /// The architecture refused the operation (e.g. kernel tried to
     /// map at a kernel-only address with user permissions).
     PermissionDenied,
+    /// No architecture MMU backend has been installed.
+    NoBackend,
+}
+
+/// Architecture backend registered by the port at boot.
+static MMU_BACKEND: SpinLock<Option<Box<dyn MmuOps + Send>>> = SpinLock::new(None);
+
+/// Install the architecture MMU backend. Replaces any previous backend.
+///
+/// Ports call this once during boot (for example from the Cortex-A /
+/// RISC-V / AArch64 `kernel_bridge`). Keeping the backend behind a
+/// trait object means the syscall layer never has to `cfg` on the
+/// architecture.
+pub fn install_mmu(backend: Box<dyn MmuOps + Send>) {
+    *MMU_BACKEND.lock() = Some(backend);
+}
+
+/// Remove the registered backend (used by tests and shutdown paths).
+pub fn uninstall_mmu() -> bool {
+    MMU_BACKEND.lock().take().is_some()
+}
+
+/// Run `f` against the registered backend. Returns `None` when no port
+/// has installed one.
+pub fn with_mmu<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut dyn MmuOps) -> R,
+{
+    let mut guard = MMU_BACKEND.lock();
+    guard.as_mut().map(|backend| f(backend.as_mut()))
+}
+
+/// True when a port installed a backend.
+pub fn has_mmu_backend() -> bool {
+    MMU_BACKEND.lock().is_some()
 }
 
 /// Default [`MmuOps`] for architectures with no MMU (Cortex-M).
@@ -114,7 +159,13 @@ pub struct NoMmu;
 
 impl MmuOps for NoMmu {
     fn enable(&mut self, _cfg: &MmuConfig) {}
-    fn map(&mut self, _vaddr: u32, _paddr: u32, _size: usize, _perms: PagePerms) -> Result<(), MmuError> {
+    fn map(
+        &mut self,
+        _vaddr: u32,
+        _paddr: u32,
+        _size: usize,
+        _perms: PagePerms,
+    ) -> Result<(), MmuError> {
         Ok(())
     }
     fn unmap(&mut self, _vaddr: u32, _size: usize) -> Result<(), MmuError> {

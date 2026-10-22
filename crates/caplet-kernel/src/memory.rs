@@ -94,6 +94,62 @@ impl MemoryLayout {
         }
     }
 
+    /// Memory layout for the QEMU RISC-V `virt` machine.
+    ///
+    /// The kernel image is linked at `0x8000_0000`; the boot heap is
+    /// placed above the first 16 MiB of the image so the two never
+    /// overlap.
+    pub const fn riscv_virt() -> Self {
+        Self {
+            flash_start: 0x8000_0000,
+            flash_size: 0,
+            ram_start: 0x8000_0000,
+            ram_size: 128 * 1024 * 1024,
+            kernel_stack_size: 64 * 1024,
+            heap_start: 0x8100_0000,
+            heap_size: 16 * 1024 * 1024,
+        }
+    }
+
+    /// Memory layout for the QEMU AArch64 `virt` machine.
+    ///
+    /// RAM starts at `0x4000_0000`; the boot heap starts 16 MiB
+    /// above the image base.
+    pub const fn aarch64_virt() -> Self {
+        Self {
+            flash_start: 0x4000_0000,
+            flash_size: 0,
+            ram_start: 0x4000_0000,
+            ram_size: 128 * 1024 * 1024,
+            kernel_stack_size: 64 * 1024,
+            heap_start: 0x4100_0000,
+            heap_size: 16 * 1024 * 1024,
+        }
+    }
+
+    /// Memory layout for the QEMU `vexpress-a9` / Renode Cortex-A9 and
+    /// Allwinner A20 images.
+    ///
+    /// Both platforms load the ELF at the start of the 64 MiB low-DRAM
+    /// window.  The board-owned allocator uses `0x6200_0000` and the
+    /// kernel boot heap starts at `0x6300_0000`, which leaves the first
+    /// 32 MiB for the image, BSS (including static task stacks) and the
+    /// board allocator.  The reset stack is initialised to `0x6400_0000`
+    /// and grows down, so the boot heap stops 1 MiB below it.  Keeping
+    /// that gap explicit prevents heap allocations from being silently
+    /// overwritten by early boot/exception frames.
+    pub const fn vexpress_a9() -> Self {
+        Self {
+            flash_start: 0x6000_0000,
+            flash_size: 0,
+            ram_start: 0x6000_0000,
+            ram_size: 64 * 1024 * 1024,
+            kernel_stack_size: 64 * 1024,
+            heap_start: 0x6300_0000,
+            heap_size: 15 * 1024 * 1024,
+        }
+    }
+
     /// Get RAM end address
     pub fn ram_end(&self) -> u32 {
         self.ram_start + self.ram_size as u32
@@ -102,6 +158,30 @@ impl MemoryLayout {
     /// Get flash end address
     pub fn flash_end(&self) -> u32 {
         self.flash_start + self.flash_size as u32
+    }
+
+    /// Check that `[addr, addr + len)` is contained in flash, RAM or
+    /// the boot heap. Checked arithmetic prevents a hostile pointer
+    /// from wrapping into a valid region.
+    pub fn contains_range(&self, addr: usize, len: usize) -> bool {
+        let Some(end) = addr.checked_add(len) else {
+            return false;
+        };
+        let (Ok(addr32), Ok(end32)) = (u32::try_from(addr), u32::try_from(end)) else {
+            return false;
+        };
+        let in_region = |start: u32, size: usize| {
+            let Ok(size32) = u32::try_from(size) else {
+                return false;
+            };
+            let Some(region_end) = start.checked_add(size32) else {
+                return false;
+            };
+            addr32 >= start && end32 <= region_end
+        };
+        in_region(self.flash_start, self.flash_size)
+            || in_region(self.ram_start, self.ram_size)
+            || in_region(self.heap_start, self.heap_size)
     }
 
     /// Get the memory regions for MPU/MMU configuration

@@ -77,8 +77,7 @@ static INIT_GUARD: SpinLock<()> = SpinLock::new(());
 /// allocator.
 pub fn init_bump_allocator(start: usize, size: usize) {
     let _g = INIT_GUARD.lock();
-    let boxed: &'static mut BumpAllocator =
-        Box::leak(Box::new(BumpAllocator::new(start, size)));
+    let boxed: &'static mut BumpAllocator = Box::leak(Box::new(BumpAllocator::new(start, size)));
     BOOT_ALLOCATOR.store(boxed, Ordering::Release);
 }
 

@@ -6,9 +6,10 @@ use crate::kernel_config::KernelConfig;
 
 /// Slot allocator for CSpace
 pub struct SlotAllocator {
-    /// Bitmap tracking which slots are allocated (1 = allocated, 0 = free)
-    /// Using u64 words for efficient bit operations
-    bitmap: u64,
+    /// Bitmap tracking which slots are allocated (1 = allocated, 0 = free).
+    /// Four words cover the full 256-slot CSpace; the previous scalar
+    /// silently clamped every larger request to 64.
+    bitmap: [u64; Self::WORDS],
     /// Number of bits currently set (allocated slots)
     allocated_count: usize,
     /// Maximum number of slots
@@ -16,14 +17,21 @@ pub struct SlotAllocator {
 }
 
 impl SlotAllocator {
+    /// Number of 64-bit words needed for the maximum CSpace size.
+    pub const WORDS: usize = 4;
+    /// Maximum supported slots (`WORDS * 64`).
+    pub const CAPACITY: usize = Self::WORDS * 64;
+
     /// Create a new slot allocator
     pub const fn new(max_slots: usize) -> Self {
-        // Cap at 64 slots for simple bitmap implementation
-        // For larger CSpaces, this can be extended with a Vec<u64>
         Self {
-            bitmap: 0,
+            bitmap: [0; Self::WORDS],
             allocated_count: 0,
-            max_slots: if max_slots > 64 { 64 } else { max_slots },
+            max_slots: if max_slots > Self::CAPACITY {
+                Self::CAPACITY
+            } else {
+                max_slots
+            },
         }
     }
 
@@ -33,18 +41,20 @@ impl SlotAllocator {
             return None;
         }
 
-        // Find first zero bit (free slot)
-        let slot = self.bitmap.trailing_ones() as usize;
-
-        if slot >= self.max_slots {
-            return None;
+        // Find the first zero bit (free slot) across all words.
+        for (word_index, word) in self.bitmap.iter_mut().enumerate() {
+            if *word != u64::MAX {
+                let bit = word.trailing_ones() as usize;
+                let slot = word_index * 64 + bit;
+                if slot >= self.max_slots {
+                    return None;
+                }
+                *word |= 1u64 << bit;
+                self.allocated_count += 1;
+                return Some(slot);
+            }
         }
-
-        // Mark slot as allocated
-        self.bitmap |= 1 << slot;
-        self.allocated_count += 1;
-
-        Some(slot)
+        None
     }
 
     /// Free a slot - O(1) using bitmap
@@ -53,9 +63,10 @@ impl SlotAllocator {
             return;
         }
 
-        let mask = 1u64 << slot;
-        if self.bitmap & mask != 0 {
-            self.bitmap &= !mask;
+        let word = slot / 64;
+        let mask = 1u64 << (slot % 64);
+        if self.bitmap[word] & mask != 0 {
+            self.bitmap[word] &= !mask;
             self.allocated_count -= 1;
         }
     }
@@ -72,7 +83,7 @@ impl SlotAllocator {
 
     /// Check if a slot is allocated
     pub fn is_valid(&self, slot: usize) -> bool {
-        slot < self.max_slots && (self.bitmap & (1 << slot)) != 0
+        slot < self.max_slots && (self.bitmap[slot / 64] & (1u64 << (slot % 64))) != 0
     }
 
     /// Get free slots remaining
@@ -92,7 +103,7 @@ impl SlotAllocator {
 
     /// Iterate over all allocated slots
     pub fn allocated_slots(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.max_slots).filter(move |&s| (self.bitmap & (1 << s)) != 0)
+        (0..self.max_slots).filter(move |&s| self.is_valid(s))
     }
 }
 
