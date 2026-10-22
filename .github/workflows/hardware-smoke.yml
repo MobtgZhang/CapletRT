@@ -1,0 +1,80 @@
+name: Hardware Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: Board key to exercise
+        required: true
+        default: nucleo-qemu
+        type: choice
+        options:
+          - nucleo-qemu
+          - nucleo
+          - cm3
+          - cm4
+          - cm4-fs
+
+jobs:
+  qemu-smoke:
+    name: QEMU ${{ inputs.board }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7m-none-eabi,thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm
+      - name: Run board and assert completion marker
+        run: |
+          SIM_TIMEOUT=20 bash tools/sim/run_qemu.sh '${{ inputs.board }}' | tee hardware-smoke.log
+          grep -Fq "PASS [${{ inputs.board }}] QEMU:" hardware-smoke.log
+      - name: Upload transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardware-smoke-${{ inputs.board }}
+          path: |
+            hardware-smoke.log
+            target/sim/${{ inputs.board }}/qemu.log
+
+  renode-smoke:
+    name: Renode ${{ inputs.board }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7m-none-eabi,thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Renode portable release
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl jq
+          curl -fsSL https://api.github.com/repos/renode/renode/releases/latest -o renode-release.json
+          url=$(jq -r '.assets[] | select(.name | endswith(".linux-portable.tar.gz")) | .browser_download_url' renode-release.json | head -n1)
+          test -n "$url"
+          curl -fsSL "$url" -o renode.tar.gz
+          mkdir -p "$HOME/renode"
+          tar -xzf renode.tar.gz -C "$HOME/renode"
+          bin=$(find "$HOME/renode" -type f -name renode -perm -u+x | head -n1)
+          test -n "$bin"
+          echo "$(dirname "$bin")" >> "$GITHUB_PATH"
+      - name: Run board and assert completion marker
+        run: |
+          SIM_TIMEOUT=60 bash tools/sim/run_renode.sh '${{ inputs.board }}' | tee hardware-smoke-renode.log
+          grep -Fq "PASS [${{ inputs.board }}] Renode:" hardware-smoke-renode.log
+      - name: Upload transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardware-smoke-renode-${{ inputs.board }}
+          path: |
+            hardware-smoke-renode.log
+            target/sim/${{ inputs.board }}/renode.log
