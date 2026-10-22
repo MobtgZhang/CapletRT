@@ -1,0 +1,8 @@
+# Renode boot script for hello-cortex-a9.
+mach create "cortex-a9"
+machine LoadPlatformDescription @REPL@
+sysbus LoadELF @ELF@
+uart0 CreateFileBackend @OUT@
+start
+sleep 2
+quit

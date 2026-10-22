@@ -1,0 +1,21 @@
+[package]
+name = "hello-cortex-a9"
+version = "0.1.0"
+edition = "2021"
+description = "Cortex-A9 bare-metal bring-up board for QEMU vexpress-a9 and Renode"
+
+[features]
+default = []
+# Kept for consistency with the other bare-metal boards: the `[[bin]]`
+# is only built by the simulation scripts.
+target-none = []
+
+[[bin]]
+name = "hello-cortex-a9"
+path = "src/main.rs"
+required-features = ["target-none"]
+test = false
+
+[dependencies]
+caplet-cortex-a = { path = "../../ports/cortex-a", default-features = false, features = ["cortex_a9"] }
+caplet-kernel = { path = "../../crates/caplet-kernel", default-features = false }

@@ -1,0 +1,22 @@
+// Cortex-A9 platform matching `qemu-system-arm -machine vexpress-a9`
+// for the low 64 MiB DRAM window used by CapletRT images.
+
+memory: Memory.MappedMemory @ sysbus 0x60000000
+    size: 0x04000000
+
+uart0: UART.PL011 @ sysbus 0x10009000
+    -> gic@5
+
+timer1: Timers.ARM_SP804_Timer @ sysbus 0x10011000
+    -> gic@2
+
+gic: IRQControllers.ARM_GenericInterruptController @ {
+        sysbus new Bus.BusMultiRegistration { address: 0x1E001000; size: 0x1000; region: "distributor" };
+        sysbus new Bus.BusMultiRegistration { address: 0x1E000100; size: 0x100; region: "cpuInterface" }
+    }
+    architectureVersion: .GICv1
+    supportsTwoSecurityStates: false
+
+cpu: CPU.ARMv7A @ sysbus
+    cpuType: "cortex-a9"
+    genericInterruptController: gic
