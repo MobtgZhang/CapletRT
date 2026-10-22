@@ -52,7 +52,11 @@ fn migrate_changes_cpu() {
     let mut s = SmpScheduler::new(4, &[100, 101, 102, 103]);
     s.add_task(task(1, 5));
     // Initial placement on least-loaded CPU (cpu0).
-    let initial = s.snapshot().iter().position(|c| c.run_queue_len > 0).unwrap();
+    let initial = s
+        .snapshot()
+        .iter()
+        .position(|c| c.run_queue_len > 0)
+        .unwrap();
     s.migrate(1, CpuId(3)).unwrap();
     let snap = s.snapshot();
     // The task should now be on cpu3's queue.
@@ -62,6 +66,19 @@ fn migrate_changes_cpu() {
     // The scheduler should record an in/out migration.
     assert_eq!(snap[3].migrations_in, 1);
     assert_eq!(snap[initial].migrations_out, 1);
+}
+
+#[test]
+fn scheduler_uses_its_own_cpu_count() {
+    // Another scheduler (or test) may change the process-global boot
+    // configuration at any time. Placement and migration must remain
+    // bound to the CPU count supplied to this instance.
+    set_cpu_count(1);
+    let mut s = SmpScheduler::new(4, &[100, 101, 102, 103]);
+    assert_eq!(s.online_cpus(), 4);
+    s.add_task(task(1, 5));
+    s.migrate(1, CpuId(3)).unwrap();
+    assert_eq!(s.snapshot()[3].run_queue_len, 1);
 }
 
 #[test]
