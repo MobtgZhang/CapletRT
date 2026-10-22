@@ -6,7 +6,6 @@
 //! collapsed.
 
 use alloc::string::String;
-use alloc::vec::Vec;
 
 /// Maximum path length (including the trailing NUL).
 pub const MAX_PATH_LEN: usize = 128;
@@ -169,6 +168,7 @@ mod tests {
     #[test]
     fn iterates_segments() {
         use alloc::vec;
+        use alloc::vec::Vec;
         let p = Path::parse("/a/b/c").unwrap();
         let segs: Vec<_> = p.segments().collect();
         assert_eq!(segs, vec!["a", "b", "c"]);

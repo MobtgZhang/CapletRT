@@ -1,22 +1,20 @@
 //! Power-cut resilience tests for the FS layer.
 //!
-//! These tests simulate a sudden power loss after a write by
-//! dropping the in-memory state and re-mounting from the same
-//! backing bytes. They are designed to exercise the *contract*
-//! that future LittleFS / FAT32 implementations must obey: any
-//! acknowledged write must survive a power-cut / remount.
+//! The simulator applies a sequence of acknowledged writes, snapshots the
+//! durable backing bytes, drops the driver and mounts a fresh instance from
+//! those bytes.  This models a sudden power loss where the only state that
+//! survives is what reached the block device before the cut.
 //!
-//! Currently they run against [`RamFs`] and serve as a
-//! specification; once a real LittleFS backend lands, the same
-//! harness will exercise it.
-
-#![no_std]
+//! Both real backends participate: [`LittleFs`](crate::littlefs::LittleFs)
+//! exports its littlefs v2 image and [`Fat32`](crate::fat32::Fat32) exports
+//! the block image with FAT/FSInfo metadata already synchronised.
+//! Unflushed handles intentionally do *not* appear in a checkpoint, which is
+//! the same guarantee a real block device offers.
 
 extern crate alloc;
 
-use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
+
 use crate::driver::{FileMode, FsDriver};
 
 /// Outcome of one powercut simulation.
@@ -44,7 +42,8 @@ pub trait PowercutAware {
     fn checkpoint_bytes(&self) -> Vec<u8>;
 
     /// Reconstruct a driver instance from previously snapshotted
-    /// bytes.
+    /// bytes.  Implementations must return a usable (possibly empty)
+    /// volume rather than panicking when the snapshot is damaged.
     fn restore_from_checkpoint(bytes: &[u8]) -> Self;
 }
 
@@ -64,7 +63,7 @@ pub fn simulate_powercut<D>(
 where
     D: PowercutAware + FsDriver,
 {
-    // Apply the writes.
+    // Apply and acknowledge every write (flush + close) before the cut.
     let mut handles: Vec<u32> = Vec::new();
     for (path, mode, payload) in writes {
         let h = match fs.open(path, *mode) {
@@ -78,19 +77,19 @@ where
     for h in handles.iter() {
         let _ = fs.close(*h);
     }
-    // Snapshot.
+    // Snapshot the durable bytes, then remount from scratch.
     let snap = fs.checkpoint_bytes();
-    // Remount and read.
-    let mut restored = D::restore_from_checkpoint(&snap);
-    let h = restored.open(read_after_path, FileMode::Read);
-    let mut buf = [0u8; 256];
-    let Ok(h) = h else {
-        return PowercutOutcome::Lost;
+    let restored = D::restore_from_checkpoint(&snap);
+    let h = match restored.open(read_after_path, FileMode::Read) {
+        Ok(h) => h,
+        Err(_) => return PowercutOutcome::Lost,
     };
+    let mut buf = [0u8; 256];
     let n = match restored.read(h, &mut buf) {
         Ok(n) => n,
         Err(_) => return PowercutOutcome::Lost,
     };
+    let _ = restored.close(h);
     if &buf[..n] == expected_after {
         PowercutOutcome::Intact
     } else {
@@ -101,49 +100,103 @@ where
     }
 }
 
-/// Reference implementation of [`PowercutAware`] for [`RamFs`].
-///
-/// The "checkpoint" is a serialized snapshot of the in-memory
-/// tree; on restore we rebuild an equivalent RamFs.
-pub struct RamFsCheckpoint {
-    /// Bytes captured at the checkpoint.
-    pub bytes: Vec<u8>,
-    /// Path that was written last (testing convenience).
-    pub label: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ramfs::RamFs;
+    use crate::driver::DriverError;
+    use crate::fat32::Fat32;
+    use crate::littlefs::LittleFs;
 
-    // Minimal hand-rolled serializer so the test does not need
-    // serde. Format: u32 magic, then per-node
-    //   u8 kind (0=file, 1=dir), u16 name_len, name bytes,
-    //   u64 data_len, data bytes.
-    const MAGIC: u32 = 0xCAF1_512E;
-
-    pub fn serialize(fs: &RamFs) -> Vec<u8> {
-        // We need access to the internal state — for tests we
-        // walk the public API instead: read_dir recursively,
-        // record the file paths + contents.
-        let mut out: Vec<u8> = Vec::new();
-        out.extend_from_slice(&MAGIC.to_le_bytes());
-        // We don't have a public recursive walk; in practice
-        // this helper would be implemented by the real backend.
-        // For now, write a stub.
-        let _ = fs;
-        out
+    fn read_all(fs: &impl FsDriver, path: &str) -> Option<Vec<u8>> {
+        let h = fs.open(path, FileMode::Read).ok()?;
+        let mut out = Vec::new();
+        let mut buf = [0u8; 128];
+        loop {
+            match fs.read(h, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+                Err(_) => return None,
+            }
+        }
+        let _ = fs.close(h);
+        Some(out)
     }
 
     #[test]
-    fn powercut_passes_for_intact_write() {
-        let fs = RamFs::new();
+    fn littlefs_acknowledged_write_survives_powercut() {
+        let fs = LittleFs::new();
+        let outcome = simulate_powercut(
+            &*fs,
+            &[
+                ("/boot.cfg", FileMode::CreateTruncate, b"board=caplet\n"),
+                ("/logs/boot.log", FileMode::CreateTruncate, b"started\n"),
+            ],
+            "/boot.cfg",
+            b"board=caplet\n",
+        );
+        assert_eq!(outcome, PowercutOutcome::Intact);
+    }
+
+    #[test]
+    fn unflushed_littlefs_write_is_not_durable() {
+        let fs = LittleFs::new();
+        let h = fs.open("/pending.txt", FileMode::CreateTruncate).unwrap();
+        fs.write(h, b"not-acknowledged").unwrap();
+        // No flush/close: the handle state has not reached the image.
+        let snap = fs.checkpoint_bytes();
+        let restored = LittleFs::restore_from_checkpoint(&snap);
+        assert_eq!(
+            restored.open("/pending.txt", FileMode::Read).err(),
+            Some(DriverError::NotFound)
+        );
+    }
+
+    #[test]
+    fn truncated_littlefs_checkpoint_is_rejected() {
+        let fs = LittleFs::new();
         let h = fs.open("/a", FileMode::CreateTruncate).unwrap();
         fs.write(h, b"abc").unwrap();
         fs.close(h).unwrap();
-        // Simulate: nothing should be lost (RAMFS lives on).
-        let snap = serialize(&fs);
-        assert_eq!(&snap[..4], &MAGIC.to_le_bytes());
+        let mut bytes = fs.checkpoint_bytes();
+        bytes.truncate(bytes.len() / 2);
+        assert!(LittleFs::try_restore_from_checkpoint(&bytes).is_err());
+    }
+
+    #[test]
+    fn corrupt_littlefs_snapshot_restores_to_usable_volume() {
+        let fs = LittleFs::new();
+        let h = fs.open("/a", FileMode::CreateTruncate).unwrap();
+        fs.write(h, b"abc").unwrap();
+        fs.close(h).unwrap();
+        let mut bytes = fs.checkpoint_bytes();
+        let mid = bytes.len() / 2;
+        bytes[mid] ^= 0xff;
+        // The trait contract is "never panic": either the image mounts or the
+        // implementation falls back to a freshly formatted volume.
+        let restored = LittleFs::restore_from_checkpoint(&bytes);
+        let h = restored.open("/fresh", FileMode::CreateTruncate).unwrap();
+        assert_eq!(restored.write(h, b"ok").unwrap(), 2);
+        restored.close(h).unwrap();
+        assert_eq!(read_all(&restored, "/fresh").as_deref(), Some(&b"ok"[..]));
+    }
+
+    #[test]
+    fn fat32_acknowledged_write_survives_powercut() {
+        let fs = Fat32::format(64 * 1024 * 1024, 1).unwrap();
+        let outcome = simulate_powercut(
+            &fs,
+            &[("/sentinel.bin", FileMode::CreateTruncate, b"fat32-durable")],
+            "/sentinel.bin",
+            b"fat32-durable",
+        );
+        assert_eq!(outcome, PowercutOutcome::Intact);
+    }
+
+    #[test]
+    fn truncated_fat32_checkpoint_is_rejected() {
+        let fs = Fat32::format(64 * 1024 * 1024, 1).unwrap();
+        let mut bytes = fs.checkpoint_bytes();
+        bytes.truncate(bytes.len() / 2);
+        assert!(Fat32::try_restore_from_checkpoint(&bytes).is_err());
     }
 }

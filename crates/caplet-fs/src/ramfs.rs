@@ -78,14 +78,9 @@ impl RamFs {
         })
     }
 
-    /// Walk a path and return the inode id of the (existing)
-    /// final node, or `None` if any component is missing.
-    fn lookup(&self, path: &str) -> Option<u32> {
-        let state = self.nodes.lock();
-        Self::lookup_locked(&state, path)
-    }
-
-    /// Like [`Self::lookup`] but caller must hold the lock.
+    /// Walk a path and return the inode id of the (existing) final node,
+    /// or `None` if any component is missing. The caller must hold the
+    /// state lock.
     fn lookup_locked(state: &RamFsState, path: &str) -> Option<u32> {
         let mut cur = 0u32;
         for seg in path.split('/').filter(|s| !s.is_empty()) {
@@ -100,10 +95,7 @@ impl RamFs {
 
     /// Like [`Self::lookup`] but creates intermediate directories
     /// as needed. Caller must already hold the state lock.
-    fn ensure_parent_locked(
-        state: &mut RamFsState,
-        path: &str,
-    ) -> Result<u32, DriverError> {
+    fn ensure_parent_locked(state: &mut RamFsState, path: &str) -> Result<u32, DriverError> {
         let mut cur = 0u32;
         for seg in path.split('/').filter(|s| !s.is_empty()) {
             let node = state.nodes.get(&cur).ok_or(DriverError::NotFound)?;
@@ -204,10 +196,7 @@ impl FsDriver for RamFs {
 
     fn close(&self, handle: u32) -> Result<(), DriverError> {
         let mut state = self.nodes.lock();
-        state
-            .handles
-            .remove(&handle)
-            .ok_or(DriverError::NotFound)?;
+        state.handles.remove(&handle).ok_or(DriverError::NotFound)?;
         Ok(())
     }
 
@@ -218,7 +207,11 @@ impl FsDriver for RamFs {
             .get(&handle)
             .ok_or(DriverError::NotFound)?
             .inode;
-        let mode = state.handles.get(&handle).ok_or(DriverError::NotFound)?.mode;
+        let mode = state
+            .handles
+            .get(&handle)
+            .ok_or(DriverError::NotFound)?
+            .mode;
         if !mode.is_read() {
             return Err(DriverError::PermissionDenied);
         }
@@ -226,23 +219,42 @@ impl FsDriver for RamFs {
         if node.is_dir {
             return Err(DriverError::InvalidArgument);
         }
-        let pos = state.handles.get(&handle).ok_or(DriverError::NotFound)?.position as usize;
+        let pos = state
+            .handles
+            .get(&handle)
+            .ok_or(DriverError::NotFound)?
+            .position as usize;
         let available = node.data.len().saturating_sub(pos);
         let to_copy = buf.len().min(available);
         buf[..to_copy].copy_from_slice(&node.data[pos..pos + to_copy]);
-        state.handles.get_mut(&handle).ok_or(DriverError::NotFound)?.position +=
-            to_copy as u64;
+        state
+            .handles
+            .get_mut(&handle)
+            .ok_or(DriverError::NotFound)?
+            .position += to_copy as u64;
         Ok(to_copy)
     }
 
     fn write(&self, handle: u32, buf: &[u8]) -> Result<usize, DriverError> {
         let mut state = self.nodes.lock();
-        let inode = state.handles.get(&handle).ok_or(DriverError::NotFound)?.inode;
-        let mode = state.handles.get(&handle).ok_or(DriverError::NotFound)?.mode;
+        let inode = state
+            .handles
+            .get(&handle)
+            .ok_or(DriverError::NotFound)?
+            .inode;
+        let mode = state
+            .handles
+            .get(&handle)
+            .ok_or(DriverError::NotFound)?
+            .mode;
         if !mode.is_write() {
             return Err(DriverError::PermissionDenied);
         }
-        let pos = state.handles.get(&handle).ok_or(DriverError::NotFound)?.position as usize;
+        let pos = state
+            .handles
+            .get(&handle)
+            .ok_or(DriverError::NotFound)?
+            .position as usize;
         let node = state.nodes.get_mut(&inode).ok_or(DriverError::NotFound)?;
         if node.is_dir {
             return Err(DriverError::InvalidArgument);
@@ -251,8 +263,11 @@ impl FsDriver for RamFs {
             node.data.resize(pos + buf.len(), 0);
         }
         node.data[pos..pos + buf.len()].copy_from_slice(buf);
-        state.handles.get_mut(&handle).ok_or(DriverError::NotFound)?.position +=
-            buf.len() as u64;
+        state
+            .handles
+            .get_mut(&handle)
+            .ok_or(DriverError::NotFound)?
+            .position += buf.len() as u64;
         Ok(buf.len())
     }
 
@@ -265,7 +280,12 @@ impl FsDriver for RamFs {
         if mode.is_write() {
             // Already extracted — keep `state` borrow alive.
         }
-        let len = state.nodes.get(&inode).ok_or(DriverError::NotFound)?.data.len() as i64;
+        let len = state
+            .nodes
+            .get(&inode)
+            .ok_or(DriverError::NotFound)?
+            .data
+            .len() as i64;
         let target = match from {
             SeekFrom::Start(p) => p as i64,
             SeekFrom::Current(d) => cur_pos as i64 + d,
@@ -274,7 +294,11 @@ impl FsDriver for RamFs {
         if target < 0 {
             return Err(DriverError::InvalidArgument);
         }
-        state.handles.get_mut(&handle).ok_or(DriverError::NotFound)?.position = target as u64;
+        state
+            .handles
+            .get_mut(&handle)
+            .ok_or(DriverError::NotFound)?
+            .position = target as u64;
         Ok(target as u64)
     }
 
@@ -370,9 +394,15 @@ impl FsDriver for RamFs {
             .get(src_name)
             .copied()
             .ok_or(DriverError::NotFound)?;
-        let sp = state.nodes.get_mut(&src_parent).ok_or(DriverError::NotFound)?;
+        let sp = state
+            .nodes
+            .get_mut(&src_parent)
+            .ok_or(DriverError::NotFound)?;
         sp.children.remove(src_name);
-        let dp = state.nodes.get_mut(&dst_parent).ok_or(DriverError::NotFound)?;
+        let dp = state
+            .nodes
+            .get_mut(&dst_parent)
+            .ok_or(DriverError::NotFound)?;
         dp.children.insert(String::from(dst_name), target);
         Ok(())
     }
@@ -397,9 +427,7 @@ mod tests {
     #[test]
     fn create_open_write_read() {
         let fs = RamFs::new();
-        let h = fs
-            .open("/foo.txt", FileMode::CreateTruncate)
-            .expect("open");
+        let h = fs.open("/foo.txt", FileMode::CreateTruncate).expect("open");
         assert!(fs.write(h, b"hello").is_ok());
         fs.seek(h, SeekFrom::Start(0)).unwrap();
         let mut buf = [0u8; 5];
@@ -427,9 +455,7 @@ mod tests {
     #[test]
     fn seek_end() {
         let fs = RamFs::new();
-        let h = fs
-            .open("/x", FileMode::CreateTruncate)
-            .unwrap();
+        let h = fs.open("/x", FileMode::CreateTruncate).unwrap();
         fs.write(h, b"abcdef").unwrap();
         let pos = fs.seek(h, SeekFrom::End(-2)).unwrap();
         assert_eq!(pos, 4);

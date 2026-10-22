@@ -71,7 +71,9 @@ pub fn syscall_fs(
     cursor: u64,
 ) -> Result<u64, crate::mount::MountError> {
     let p = Path::parse(path).map_err(|_| crate::mount::MountError::NoSuchMount)?;
-    let (mount, sub) = table.resolve(&p).ok_or(crate::mount::MountError::NoSuchMount)?;
+    let (mount, sub) = table
+        .resolve(&p)
+        .ok_or(crate::mount::MountError::NoSuchMount)?;
     if mount.read_only && (matches!(op, FsSyscall::Open) || mode.is_write()) {
         return Err(crate::mount::MountError::Driver(
             crate::driver::DriverError::ReadOnly,
@@ -165,7 +167,6 @@ mod tests {
     use crate::driver::{DirEntry, DriverError, FsDriver, SeekFrom};
     use crate::mount::MountTable;
     use alloc::sync::Arc;
-    use alloc::vec;
     use alloc::vec::Vec;
 
     /// Trivial in-memory test driver.
@@ -232,14 +233,7 @@ mod tests {
     fn read_only_mount_rejects_writes() {
         let mut t = MountTable::new();
         t.mount("data", Arc::new(StubDriver), true).unwrap();
-        let res = syscall_fs(
-            &t,
-            FsSyscall::Open,
-            "/data/x",
-            FileMode::Write,
-            None,
-            0,
-        );
+        let res = syscall_fs(&t, FsSyscall::Open, "/data/x", FileMode::Write, None, 0);
         assert!(res.is_err());
     }
 }

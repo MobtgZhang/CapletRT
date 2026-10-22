@@ -8,18 +8,23 @@
 
 #![no_std]
 #![deny(missing_docs)]
+// MSRV 1.75 predates `is_multiple_of`; the modulo form is intentional.
+#![allow(clippy::manual_is_multiple_of)]
+// MSRV 1.75 predates `slice::as_chunks`; keep the portable form.
+#![allow(clippy::chunks_exact_to_as_chunks)]
 
 extern crate alloc;
 
-pub mod mount;
-pub mod syscall;
-pub mod driver;
-pub mod path;
-pub mod inode;
-pub mod ramfs;
-pub mod littlefs;
-pub mod fat32;
 pub mod boot;
+pub mod driver;
+pub mod fat32;
+pub mod inode;
+pub mod littlefs;
+pub mod mount;
+pub mod path;
+pub mod powercut;
+pub mod ramfs;
+pub mod syscall;
 
 pub use driver::{DirEntry, DriverError, FileMode, FsDriver, SeekFrom};
 pub use inode::{FileHandle, Inode, InodeKind};

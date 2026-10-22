@@ -85,7 +85,8 @@ impl MountTable {
             id,
             read_only,
         };
-        self.mounts.insert(alloc::string::String::from(name), Arc::new(mp));
+        self.mounts
+            .insert(alloc::string::String::from(name), Arc::new(mp));
         Ok(id)
     }
 

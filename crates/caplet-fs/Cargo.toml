@@ -9,3 +9,4 @@ authors.workspace = true
 [dependencies]
 caplet-cap = { path = "../caplet-cap" }
 caplet-sync = { path = "../caplet-sync" }
+littlefs-rust = { package = "littlefs2-rust", version = "0.1.1", default-features = false }
