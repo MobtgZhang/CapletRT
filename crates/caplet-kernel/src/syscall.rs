@@ -26,6 +26,12 @@ pub enum Syscall {
     CapFind = 13,
     /// Grant capability to another task
     CapGrant = 14,
+    /// Create a root capability in the current task's CSpace.
+    ///
+    /// Root creation is intentionally a distinct operation from
+    /// [`Syscall::CapDerive`]: a derivation always names a live parent
+    /// capability, so slot 0 can never be mistaken for "no parent".
+    CapCreate = 15,
     /// Send IPC message
     IpcSend = 20,
     /// Receive IPC message
@@ -100,6 +106,7 @@ impl Syscall {
             12 => Self::CapRevoke,
             13 => Self::CapFind,
             14 => Self::CapGrant,
+            15 => Self::CapCreate,
             20 => Self::IpcSend,
             21 => Self::IpcRecv,
             22 => Self::IpcReply,
@@ -176,19 +183,16 @@ pub struct WideSyscallArgs {
     pub arg2_lo: u32,
     /// Third argument (high 32 bits)
     pub arg2_hi: u32,
-    /// Fourth argument
+    /// Fourth argument (low 32 bits)
     pub arg3: u32,
+    /// Fourth argument (high 32 bits). Used when `arg3` carries a pointer on
+    /// a 64-bit target.
+    pub arg3_hi: u32,
 }
 
 impl WideSyscallArgs {
     /// Create wide args.
-    pub const fn new(
-        number: u32,
-        arg0: u32,
-        arg1: u64,
-        arg2: u64,
-        arg3: u32,
-    ) -> Self {
+    pub const fn new(number: u32, arg0: u32, arg1: u64, arg2: u64, arg3: u32) -> Self {
         Self {
             number,
             arg0,
@@ -197,7 +201,17 @@ impl WideSyscallArgs {
             arg2_lo: arg2 as u32,
             arg2_hi: (arg2 >> 32) as u32,
             arg3,
+            arg3_hi: 0,
         }
+    }
+
+    /// Attach a full-width `arg3` pointer (used by crypto/flash parameter
+    /// blocks on 64-bit hosts and targets).
+    pub fn with_arg3_ptr<T>(mut self, ptr: *const T) -> Self {
+        let value = ptr as u64;
+        self.arg3 = value as u32;
+        self.arg3_hi = (value >> 32) as u32;
+        self
     }
 
     /// Pointer in `arg1`.
@@ -210,9 +224,16 @@ impl WideSyscallArgs {
         let p = ((self.arg2_hi as u64) << 32) | (self.arg2_lo as u64);
         p as *mut T
     }
+
+    /// Pointer in `arg3`.
+    pub fn arg3_ptr<T>(&self) -> *const T {
+        let p = ((self.arg3_hi as u64) << 32) | (self.arg3 as u64);
+        p as *const T
+    }
 }
 
 /// Syscall return value
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SyscallResult {
     /// Return value

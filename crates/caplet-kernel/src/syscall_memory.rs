@@ -6,15 +6,13 @@
 //! - AllocateMemory: allocate heap memory
 //! - FreeMemory: free heap memory
 
-use crate::syscall::{Syscall, SyscallArgs, SyscallResult};
-use crate::kernel::{with_kernel, CURRENT_TASK_ID};
 use crate::bump_allocator;
+use crate::syscall::{Syscall, SyscallArgs, SyscallResult};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 const ERR_INVALID_ADDR: u32 = 40;
 const ERR_OUT_OF_MEMORY: u32 = 41;
-const ERR_NOT_MAPPED: u32 = 42;
-const ERR_PERMISSION_DENIED: u32 = 43;
+const ERR_NOT_SUPPORTED: u32 = 44;
 
 /// Next memory region ID
 static NEXT_REGION_ID: AtomicU32 = AtomicU32::new(1);
@@ -56,37 +54,10 @@ impl MemoryRegion {
 /// Handle memory-related syscalls
 pub fn handle_memory_syscall(args: SyscallArgs) -> SyscallResult {
     match Syscall::from_number(args.number) {
-        Syscall::MapMemory => {
-            // arg0 = base address
-            // arg1 = size
-            // arg2 = flags (r/w/x)
-            let base = args.arg0 as usize;
-            let size = args.arg1 as usize;
-            let flags = args.arg2;
-
-            if base == 0 || size == 0 {
-                return SyscallResult::err(ERR_INVALID_ADDR);
-            }
-
-            let read = (flags & 1) != 0;
-            let write = (flags & 2) != 0;
-            let execute = (flags & 4) != 0;
-
-            // TODO: integrate with MPU/MMU
-            // For now, just acknowledge the mapping
-            SyscallResult::ok(NEXT_REGION_ID.fetch_add(1, Ordering::Relaxed))
-        }
-        Syscall::UnmapMemory => {
-            // arg0 = region id
-            let region_id = args.arg0;
-
-            if region_id == 0 {
-                return SyscallResult::err(ERR_NOT_MAPPED);
-            }
-
-            // TODO: unmap from MPU/MMU
-            SyscallResult::ok(0)
-        }
+        // MapMemory/UnmapMemory are routed to `syscall_cap` because
+        // they are capability operations with a (vaddr, paddr, size,
+        // perms) ABI. Keep them explicitly unsupported here.
+        Syscall::MapMemory | Syscall::UnmapMemory => SyscallResult::err(ERR_NOT_SUPPORTED),
         Syscall::AllocateMemory => {
             // arg0 = size
             // arg1 = alignment
@@ -110,9 +81,10 @@ pub fn handle_memory_syscall(args: SyscallArgs) -> SyscallResult {
                 return SyscallResult::err(ERR_INVALID_ADDR);
             }
 
-            // Bump allocator doesn't support free, but we acknowledge the call
-            // TODO: switch to a proper allocator that supports free
-            SyscallResult::ok(0)
+            // A bump allocator cannot honour `free`. Returning success
+            // here would silently leak and lie to callers, so report
+            // the limitation explicitly.
+            SyscallResult::err(ERR_NOT_SUPPORTED)
         }
         _ => SyscallResult::err(1),
     }

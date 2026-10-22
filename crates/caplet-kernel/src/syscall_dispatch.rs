@@ -8,21 +8,27 @@
 
 use crate::syscall::{Syscall, SyscallArgs, SyscallResult, WideSyscallArgs};
 use crate::syscall_cap::{handle_cap_syscall, handle_cap_syscall_wide};
-use crate::syscall_task::handle_task_syscall;
+use crate::syscall_crypto::{handle_crypto_syscall, handle_crypto_syscall_wide};
+use crate::syscall_flash::{
+    handle_flash_erase, handle_flash_erase_wide, handle_flash_read, handle_flash_read_wide,
+    handle_flash_write, handle_flash_write_wide,
+};
 use crate::syscall_ipc::{handle_ipc_syscall, handle_ipc_syscall_wide};
-use crate::syscall_m3::handle_m3_syscall;
-use crate::syscall_crypto::handle_crypto_syscall;
-use crate::syscall_flash::{handle_flash_read, handle_flash_write, handle_flash_erase};
-use crate::syscall_timer::handle_timer_syscall;
+use crate::syscall_m3::{handle_m3_syscall, handle_m3_syscall_wide};
 use crate::syscall_memory::handle_memory_syscall;
+use crate::syscall_task::handle_task_syscall;
+use crate::syscall_timer::handle_timer_syscall;
 
 /// Dispatch a syscall to the appropriate handler (32-bit args).
 pub fn syscall_dispatch(args: SyscallArgs) -> SyscallResult {
     match Syscall::from_number(args.number) {
-        Syscall::TaskSpawn | Syscall::TaskExit | Syscall::TaskYield | Syscall::TaskGetId | Syscall::TaskSleep => {
-            handle_task_syscall(args)
-        }
+        Syscall::TaskSpawn
+        | Syscall::TaskExit
+        | Syscall::TaskYield
+        | Syscall::TaskGetId
+        | Syscall::TaskSleep => handle_task_syscall(args),
         Syscall::CapDerive
+        | Syscall::CapCreate
         | Syscall::CapDuplicate
         | Syscall::CapRevoke
         | Syscall::CapFind
@@ -33,24 +39,18 @@ pub fn syscall_dispatch(args: SyscallArgs) -> SyscallResult {
         | Syscall::ChannelCreate
         | Syscall::ChannelSend
         | Syscall::ChannelRecv => handle_ipc_syscall(args),
-        Syscall::MapMemory
-        | Syscall::UnmapMemory
-        | Syscall::AllocateMemory
-        | Syscall::FreeMemory => {
-            handle_memory_syscall(args)
-        }
-        Syscall::TimerGet | Syscall::TimerSet | Syscall::TimerCancel => {
-            handle_timer_syscall(args)
-        }
+        // Map/Unmap use the capability ABI (vaddr, paddr, size,
+        // permissions) implemented in `syscall_cap`. Allocation lives
+        // in `syscall_memory`.
+        Syscall::MapMemory | Syscall::UnmapMemory => handle_cap_syscall(args),
+        Syscall::AllocateMemory | Syscall::FreeMemory => handle_memory_syscall(args),
+        Syscall::TimerGet | Syscall::TimerSet | Syscall::TimerCancel => handle_timer_syscall(args),
         Syscall::LogWrite => SyscallResult::ok(0),
-        Syscall::NsCreate
-        | Syscall::NsJoin
-        | Syscall::NsPublish
-        | Syscall::NsSubscribe
-        | Syscall::NsEndpoint
-        | Syscall::ModuleRegister
-        | Syscall::ModuleStart
-        | Syscall::ModuleLoad => handle_m3_syscall(args),
+        Syscall::NsPublish | Syscall::NsSubscribe | Syscall::NsEndpoint => handle_ipc_syscall(args),
+        Syscall::NsCreate | Syscall::NsJoin => handle_m3_syscall(args),
+        Syscall::ModuleRegister | Syscall::ModuleStart | Syscall::ModuleLoad => {
+            handle_m3_syscall(args)
+        }
         Syscall::CryptoOp => handle_crypto_syscall(args),
         Syscall::FlashRead => handle_flash_read(args),
         Syscall::FlashWrite => handle_flash_write(args),
@@ -63,6 +63,7 @@ pub fn syscall_dispatch(args: SyscallArgs) -> SyscallResult {
 pub fn syscall_dispatch_wide(args: WideSyscallArgs) -> SyscallResult {
     match Syscall::from_number(args.number) {
         Syscall::CapDerive
+        | Syscall::CapCreate
         | Syscall::CapDuplicate
         | Syscall::CapRevoke
         | Syscall::CapFind
@@ -72,18 +73,40 @@ pub fn syscall_dispatch_wide(args: WideSyscallArgs) -> SyscallResult {
         | Syscall::IpcReply
         | Syscall::ChannelCreate
         | Syscall::ChannelSend
-        | Syscall::ChannelRecv => handle_ipc_syscall_wide(args),
+        | Syscall::ChannelRecv
+        | Syscall::NsPublish
+        | Syscall::NsSubscribe
+        | Syscall::NsEndpoint => handle_ipc_syscall_wide(args),
+        Syscall::NsCreate | Syscall::NsJoin => handle_m3_syscall_wide(args),
+        Syscall::ModuleRegister | Syscall::ModuleStart | Syscall::ModuleLoad => {
+            handle_m3_syscall_wide(args)
+        }
+        Syscall::CryptoOp => handle_crypto_syscall_wide(args),
+        Syscall::FlashRead => handle_flash_read_wide(args),
+        Syscall::FlashWrite => handle_flash_write_wide(args),
+        Syscall::FlashErase => handle_flash_erase_wide(args),
         _ => {
             // Fall back to 32-bit dispatch (truncate high bits).
-            let narrow = SyscallArgs::new(args.number, args.arg0, args.arg1_lo, args.arg2_lo, args.arg3);
+            let narrow = SyscallArgs::new(
+                args.number,
+                args.arg0,
+                args.arg1_lo,
+                args.arg2_lo,
+                args.arg3,
+            );
             syscall_dispatch(narrow)
         }
     }
 }
 
-/// Syscall dispatch function (called from assembly)
+/// Syscall dispatch function (called from assembly).
+///
+/// # Safety
+///
+/// `args` must either be null or point to a readable, properly aligned
+/// [`SyscallArgs`] value for the duration of this call.
 #[no_mangle]
-pub extern "C" fn __caplet_syscall(args: *const SyscallArgs) -> SyscallResult {
+pub unsafe extern "C" fn __caplet_syscall(args: *const SyscallArgs) -> SyscallResult {
     if args.is_null() {
         return SyscallResult::err(1);
     }

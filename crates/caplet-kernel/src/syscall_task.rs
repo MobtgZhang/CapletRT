@@ -4,7 +4,6 @@
 //! to make scheduling decisions, and through `Scheduler::block_current`
 //! to suspend the calling task.
 
-use crate::kernel::Kernel;
 use crate::syscall::{Syscall, SyscallArgs, SyscallResult};
 use core::sync::atomic::Ordering;
 
@@ -44,11 +43,15 @@ pub fn handle_task_syscall(args: SyscallArgs) -> SyscallResult {
             use crate::scheduler::ScheduledTask;
             // Allocate a task ID. For now we use a simple counter.
             let id = next_task_id();
+            let stack_top = match stack_base.checked_add(stack_size) {
+                Some(top) => top,
+                None => return SyscallResult::err(ERR_BAD_ARG),
+            };
             let task = ScheduledTask::new(
                 id,
                 Priority::new(priority),
-                entry,
-                stack_base + stack_size, // top of stack
+                entry as usize,
+                stack_top as usize, // top of stack
             )
             .with_stack_size(stack_size);
             kernel.add_task(task);
@@ -78,10 +81,24 @@ pub fn handle_task_syscall(args: SyscallArgs) -> SyscallResult {
         }
         Syscall::TaskGetId => SyscallResult::ok(current_task_id()),
         Syscall::TaskSleep => {
-            // For the minimal M1 implementation we treat sleep as
-            // "yield" — there is no timer wheel yet (Phase 5).
-            let _ = args.arg0;
+            // arg0 is a relative duration in milliseconds. A zero
+            // duration is an explicit yield and does not allocate a
+            // timer entry.
+            let task = current_task_id();
+            if task == 0 {
+                return SyscallResult::err(ERR_BAD_ARG);
+            }
+            if args.arg0 != 0 {
+                let deadline =
+                    crate::syscall_timer::get_ticks().saturating_add(u64::from(args.arg0));
+                if let Err(error) = crate::syscall_timer::schedule_wakeup(deadline, task) {
+                    return SyscallResult::err(error);
+                }
+            }
             let _ = kernel.scheduler().block_current();
+            if args.arg0 == 0 {
+                kernel.scheduler().make_ready(task);
+            }
             kernel.tick();
             SyscallResult::ok(0)
         }
