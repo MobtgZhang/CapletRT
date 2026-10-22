@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "hello-qemu-cm4-fs"
 description = "CapletRT VFS smoke test on QEMU Cortex-M4"
 version.workspace = true
@@ -11,7 +11,8 @@ caplet-cortex-m = { path = "../../ports/cortex-m", features = ["cortex_m4"] }
 caplet-kernel = { path = "../../crates/caplet-kernel" }
 caplet-log = { path = "../../crates/caplet-log", features = ["semihosting"] }
 caplet-macros = { path = "../../crates/caplet-macros" }
-caplet-macros-exports = { path = "../../crates/caplet-macros-exports" }
+caplet-macros-exports = { path = "../../crates/caplet-macros-exports", features = ["cortex-m"] }
+caplet = { path = "../../crates/caplet", features = ["cortex-m"] }
 caplet-async = { path = "../../crates/caplet-async" }
 caplet-sync = { path = "../../crates/caplet-sync" }
 caplet-fs = { path = "../../crates/caplet-fs" }
@@ -22,6 +23,7 @@ cortex-m-semihosting = { workspace = true }
 name = "hello-qemu-cm4-fs"
 path = "src/main.rs"
 required-features = ["target-none"]
+test = false
 
 [features]
 default = []

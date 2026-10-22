@@ -10,7 +10,10 @@ fn main() {
     let _ = std::fs::copy(&src, out.join("memory.x"));
     println!("cargo:rustc-link-search={}", out.display());
 
-    let build_dir = out.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf());
+    let build_dir = out
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf());
     if let Some(build_dir) = build_dir {
         if let Ok(entries) = std::fs::read_dir(&build_dir) {
             for entry in entries.flatten() {

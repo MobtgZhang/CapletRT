@@ -1,0 +1,8 @@
+# Renode boot script for the STM32F405 variant of the CM4 FS demo.
+mach create "stm32f405"
+machine LoadPlatformDescription @REPL@
+sysbus LoadELF @ELF@
+sysbus.cpu.semihosting.uart CreateFileBackend @OUT@
+start
+sleep 3
+quit
