@@ -1,43 +1,57 @@
 #!/usr/bin/env bash
-# Kani harness runner. Walks every .rs file under
-# tools/kani/harness and runs `cargo kani --harness` on each,
-# gracefully degrading if cargo-kani is not installed.
+# Run every `#[kani::proof]` function individually so one failing proof
+# cannot hide failures in the rest of the catalogue.
 
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+HARNESS_DIR="$ROOT/tools/kani/harness"
 
 if ! command -v cargo-kani >/dev/null 2>&1; then
-    echo "cargo-kani not available — Kani gate SKIPPED."
-    exit 0
+    echo "UNVERIFIED: cargo-kani is not on PATH" >&2
+    exit 127
 fi
 
-harness_dir="tools/kani/harness"
-if [[ ! -d "$harness_dir" ]]; then
-    echo "no harness directory at $harness_dir" >&2
+# A single malformed harness must not take down the developer machine.  Kani
+# runs one proof at a time in this script, so this address-space cap applies to
+# the whole verifier subtree.  Override it explicitly for a known-heavy proof.
+kani_memory_limit_kib="${KANI_MEMORY_LIMIT_KIB:-8388608}"
+ulimit -v "$kani_memory_limit_kib" || {
+    echo "FAIL: cannot apply Kani memory limit (${kani_memory_limit_kib} KiB)" >&2
+    exit 1
+}
+echo "Kani memory limit: $((kani_memory_limit_kib / 1024)) MiB"
+
+[ -d "$HARNESS_DIR" ] || {
+    echo "FAIL: no harness directory at $HARNESS_DIR" >&2
+    exit 1
+}
+
+mapfile -t harnesses < <(
+    rg -U -o --no-filename --replace '$1' \
+        '#\[kani::proof\](?:\s*#\[[^\n]+\])*\s*\n\s*fn\s+([A-Za-z_][A-Za-z0-9_]*)' \
+        "$HARNESS_DIR"/*.rs
+)
+
+if [ "${#harnesses[@]}" -eq 0 ]; then
+    echo "FAIL: no Kani proof functions found" >&2
     exit 1
 fi
 
-shopt -s nullglob
-harnesses=( "$harness_dir"/*.rs )
-shopt -u nullglob
-
-if (( ${#harnesses[@]} == 0 )); then
-    echo "no Kani harnesses found"
-    exit 0
-fi
-
-fail=0
-for h in "${harnesses[@]}"; do
-    echo "=== Kani: $h ==="
-    if ! cargo kani --harness "$h"; then
-        echo "FAIL: $h" >&2
-        fail=$((fail + 1))
+cd "$ROOT"
+failed=()
+for harness in "${harnesses[@]}"; do
+    echo "=== Kani: $harness ==="
+    if ! cargo kani -p caplet-kani-harnesses --harness "$harness"; then
+        failed+=("$harness")
+        echo "FAIL: $harness" >&2
     fi
 done
 
-if (( fail > 0 )); then
-    echo "Kani gate: $fail harness(es) failed" >&2
+if [ "${#failed[@]}" -ne 0 ]; then
+    printf 'FAIL: %d Kani proof(s) failed: %s\n' \
+        "${#failed[@]}" "${failed[*]}" >&2
     exit 1
 fi
-echo "Kani gate: OK (${#harnesses[@]} harnesses)"
+
+echo "PASS: Kani catalogue (${#harnesses[@]} proofs)"

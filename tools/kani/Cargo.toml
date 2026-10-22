@@ -1,0 +1,24 @@
+[package]
+name = "caplet-kani-harnesses"
+description = "Kani proof harnesses for the CapletRT workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+caplet-cap = { path = "../../crates/caplet-cap" }
+caplet-cortex-a = { path = "../../ports/cortex-a" }
+# The syscall-dispatch proofs exercise the core ABI.  The optional module
+# loader pulls Ed25519/SHA-512 into every dispatch call graph, which makes
+# Kani's loop instrumentation intractable.  Loader parsing is verified by
+# loader_manifest.rs and the host dynamic-loader E2E instead.
+caplet-kernel = { path = "../../crates/caplet-kernel", default-features = false }
+caplet-loader = { path = "../../crates/caplet-loader" }
+caplet-mqttsn = { path = "../../crates/caplet-mqttsn" }
+caplet-net = { path = "../../crates/caplet-net" }

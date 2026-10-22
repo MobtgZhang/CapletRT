@@ -12,14 +12,14 @@
 
 #![cfg(kani)]
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, kani::Arbitrary)]
 enum DhcpShrunk {
     Idle,
     Discover,
     Bound,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, kani::Arbitrary)]
 enum DhcpEvent {
     Start,
     Offer,
@@ -32,17 +32,20 @@ fn step(s: DhcpShrunk, e: DhcpEvent) -> DhcpShrunk {
     use DhcpEvent::*;
     use DhcpShrunk::*;
     match (s, e) {
-        (Idle,      Start)    => Discover,
-        (Discover,  Offer)    => Discover,
-        (Discover,  Ack)      => Bound,
-        (Bound,     Release)  => Idle,
-        (_,         Timeout)  => Idle,
-        (s,         _)        => s,
+        (Idle, Start) => Discover,
+        (Discover, Offer) => Discover,
+        (Discover, Ack) => Bound,
+        (Bound, Release) => Idle,
+        (_, Timeout) => Idle,
+        (s, _) => s,
     }
 }
 
 fn legal(s: DhcpShrunk) -> bool {
-    matches!(s, DhcpShrunk::Idle | DhcpShrunk::Discover | DhcpShrunk::Bound)
+    matches!(
+        s,
+        DhcpShrunk::Idle | DhcpShrunk::Discover | DhcpShrunk::Bound
+    )
 }
 
 #[kani::proof]

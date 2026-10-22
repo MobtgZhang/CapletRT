@@ -96,7 +96,10 @@ fn safety_attenuate_drops_unset_bits() {
         assert!(!result.infect(), "infect bit escaped non-infect parent");
     }
     if !parent.persistent() {
-        assert!(!result.persistent(), "persistent bit escaped non-persistent parent");
+        assert!(
+            !result.persistent(),
+            "persistent bit escaped non-persistent parent"
+        );
     }
     if !parent.transferable() {
         assert!(
@@ -149,7 +152,7 @@ fn priority_ceiling_of_equal() {
     let a: u8 = kani::any();
     kani::assume(a < 32);
     let pa = Priority::new(a);
-    let max = if pa >= pa { pa } else { pa };
+    let max = pa.max(pa);
     assert!(max == pa);
 }
 
@@ -167,7 +170,7 @@ fn priority_ceiling_picks_higher() {
 
     let pa = Priority::new(a);
     let pb = Priority::new(b);
-    let higher = if pa < pb { pb } else { pa };
+    let higher = pa.max(pb);
     assert!(higher.0 == core::cmp::min(a, b));
 }
 

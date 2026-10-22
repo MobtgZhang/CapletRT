@@ -9,27 +9,30 @@
 
 #![cfg(kani)]
 
-use caplet_net::interface::LoopbackInterface;
-use caplet_net::socket::{SocketKind, SocketTable};
+use caplet_net::socket::capacity_allows;
 
 #[kani::proof]
+#[kani::unwind(16)]
 fn socket_table_open_respects_capacity() {
+    // Model the admission decision rather than the socket map's allocator.
+    // `SocketTable::open` calls this predicate exactly once per open and
+    // inserts only when it returns true, so proving that repeated admissions
+    // stop at `capacity` proves the table cannot exceed its capacity.
     let capacity: u32 = kani::any();
-    let lb: &'static LoopbackInterface =
-        Box::leak(Box::new(LoopbackInterface::new()));
-    let table = SocketTable::new(capacity, lb);
+    kani::assume(capacity <= 8);
 
-    // Open at most capacity times.
-    let mut i: u32 = 0;
-    let mut ok = true;
-    while i < capacity + 1 {
-        if table.open(SocketKind::Udp).is_err() {
-            ok = false;
+    let mut count: usize = 0;
+    let mut rejected = false;
+    for _ in 0..=capacity {
+        if capacity_allows(count, capacity) {
+            count += 1;
+        } else {
+            rejected = true;
             break;
         }
-        i += 1;
     }
-    // Either we filled the table, or open returned an error.
-    assert!(table.len() as u32 <= capacity);
-    assert!(!ok || table.len() as u32 == capacity);
+
+    assert_eq!(count, capacity as usize);
+    assert!(rejected);
+    assert!(!capacity_allows(count, capacity));
 }

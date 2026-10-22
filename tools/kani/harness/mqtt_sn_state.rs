@@ -13,7 +13,7 @@
 
 #![cfg(kani)]
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, kani::Arbitrary)]
 enum MqttSnState {
     Init,
     SearchGw,
@@ -24,7 +24,7 @@ enum MqttSnState {
     Disconnected,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, kani::Arbitrary)]
 enum Event {
     SearchResp,
     ConnAck,
@@ -38,24 +38,30 @@ fn step(s: MqttSnState, e: Event) -> MqttSnState {
     use Event::*;
     use MqttSnState::*;
     match (s, e) {
-        (Init,          SearchResp)    => SearchGw,
-        (SearchGw,      ConnAck)       => Connect,
-        (Connect,       RegAck)        => Register,
-        (Register,      RegAck)        => Active,
-        (Active,        PublishReq)    => Active,
-        (Active,        DisconnectReq) => Disconnected,
-        (_,             Timeout)       => Reconnect,
-        (Reconnect,     ConnAck)       => Connect,
-        (_,             DisconnectReq) => Disconnected,
-        (s,             _)             => s,
+        (Init, SearchResp) => SearchGw,
+        (SearchGw, ConnAck) => Connect,
+        (Connect, RegAck) => Register,
+        (Register, RegAck) => Active,
+        (Active, PublishReq) => Active,
+        (Active, DisconnectReq) => Disconnected,
+        (_, Timeout) => Reconnect,
+        (Reconnect, ConnAck) => Connect,
+        (_, DisconnectReq) => Disconnected,
+        (s, _) => s,
     }
 }
 
 fn is_legal(s: MqttSnState) -> bool {
-    matches!(s, MqttSnState::Init | MqttSnState::SearchGw
-                  | MqttSnState::Connect | MqttSnState::Register
-                  | MqttSnState::Active | MqttSnState::Reconnect
-                  | MqttSnState::Disconnected)
+    matches!(
+        s,
+        MqttSnState::Init
+            | MqttSnState::SearchGw
+            | MqttSnState::Connect
+            | MqttSnState::Register
+            | MqttSnState::Active
+            | MqttSnState::Reconnect
+            | MqttSnState::Disconnected
+    )
 }
 
 /// Main proof: for any starting state and bounded event
