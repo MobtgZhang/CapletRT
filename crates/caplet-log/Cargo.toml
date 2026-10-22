@@ -9,6 +9,7 @@ authors.workspace = true
 [dependencies]
 cortex-m-semihosting = { workspace = true, optional = true }
 caplet-hal = { path = "../caplet-hal" }
+caplet-sync = { path = "../caplet-sync" }
 
 [features]
 default = []

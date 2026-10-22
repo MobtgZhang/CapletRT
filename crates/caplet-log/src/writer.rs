@@ -3,8 +3,8 @@
 //! Backends (semihosting, UART, RTT, …) implement this trait and are
 //! installed globally via [`crate::install_writer`].
 
-use crate::level::Level;
 use crate::fmt::ScratchBuf;
+use crate::level::Level;
 use core::fmt::Write as _;
 
 /// Log writer trait
@@ -72,6 +72,6 @@ pub fn render_line(
     msg: &str,
 ) -> Result<(), LogError> {
     let mut buf = ScratchBuf::new();
-    let _ = write!(buf, "[{}] {}: {}\n", level.name(), tag, msg);
+    let _ = writeln!(buf, "[{}] {}: {}", level.name(), tag, msg);
     sink(buf.as_bytes())
 }

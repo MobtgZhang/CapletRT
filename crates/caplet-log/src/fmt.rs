@@ -55,8 +55,7 @@ impl ScratchBuf {
         // fallible `from_utf8` and substitute a placeholder on error.
         match core::str::from_utf8(&self.buf[..self.len]) {
             Ok(s) => s,
-            Err(_) => core::str::from_utf8(b"<log buffer contains non-utf8>")
-                .unwrap_or(""),
+            Err(_) => core::str::from_utf8(b"<log buffer contains non-utf8>").unwrap_or(""),
         }
     }
 
@@ -76,8 +75,7 @@ impl fmt::Write for ScratchBuf {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let remaining = Self::CAP - self.len;
         let to_copy = core::cmp::min(s.len(), remaining);
-        self.buf[self.len..self.len + to_copy]
-            .copy_from_slice(&s.as_bytes()[..to_copy]);
+        self.buf[self.len..self.len + to_copy].copy_from_slice(&s.as_bytes()[..to_copy]);
         self.len += to_copy;
         // Always succeed — overflow is silent truncation.
         Ok(())

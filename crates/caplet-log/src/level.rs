@@ -1,13 +1,14 @@
 //! Log level definitions
 
 /// Log level
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Level {
     /// Trace level - most verbose
     Trace = 0,
     /// Debug level
     Debug = 1,
     /// Info level
+    #[default]
     Info = 2,
     /// Warning level
     Warn = 3,
@@ -18,8 +19,8 @@ pub enum Level {
 }
 
 impl Level {
-    /// Get the level from a string
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Parse a level name, accepting the conventional `warning` alias.
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "trace" => Some(Level::Trace),
             "debug" => Some(Level::Debug),
@@ -59,9 +60,11 @@ impl Level {
     }
 }
 
-impl Default for Level {
-    fn default() -> Self {
-        Level::Info
+impl core::str::FromStr for Level {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or(())
     }
 }
 

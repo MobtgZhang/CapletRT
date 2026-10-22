@@ -6,7 +6,6 @@
 //! without locking.
 
 #![deny(missing_docs)]
-#![allow(unsafe_code)]
 #![no_std]
 
 extern crate alloc;
@@ -30,18 +29,13 @@ use core::sync::atomic::{AtomicU8, Ordering};
 /// 0 = Trace, 1 = Debug, 2 = Info, 3 = Warn, 4 = Error, 5 = Off.
 static LOG_LEVEL: AtomicU8 = AtomicU8::new(Level::Info as u8);
 
-/// Singleton `LogWriter` installed by the board. Backed by a small
-/// fixed-size table because `dyn LogWriter` is a wide pointer and
-/// cannot live in an [`AtomicPtr`].
-static WRITERS: [AtomicU8; MAX_WRITERS] = [const { AtomicU8::new(0) }; MAX_WRITERS];
-
-/// Tiny per-slot pointer table. Each slot is a thin pointer to the
-/// writer object. We store a `u8` "tag" (the slot index) so we
-/// never need to move a fat pointer through atomic ops.
-const MAX_WRITERS: usize = 4;
-
-/// Currently selected writer tag (0xFF = no writer).
-static ACTIVE_SLOT: AtomicU8 = AtomicU8::new(0xFF);
+/// Singleton `LogWriter` installed by the board.
+///
+/// A trait object is a fat pointer, which cannot be stored atomically. The
+/// lock is only held while copying the pointer; the writer itself is `Sync`
+/// and is invoked after the lock has been released.
+static WRITER: caplet_sync::SpinLock<Option<&'static dyn LogWriter>> =
+    caplet_sync::SpinLock::new(None);
 
 /// Install (or remove) the global writer.
 ///
@@ -49,63 +43,12 @@ static ACTIVE_SLOT: AtomicU8 = AtomicU8::new(0xFF);
 /// a time; calling this a second time replaces the previous one. The
 /// writer must outlive the program (i.e. be a `static`).
 pub fn install_writer(writer: Option<&'static dyn LogWriter>) {
-    match writer {
-        Some(w) => {
-            // Special-case: semihosting writer uses a known tag.
-            #[cfg(feature = "semihosting")]
-            {
-                if (w as *const dyn LogWriter as *const ())
-                    == (&semihosting::SEMIHOSTING_INSTANCE as *const _ as *const ())
-                {
-                    ACTIVE_SLOT.store(semihosting::SEMIHOSTING_TAG, Ordering::Release);
-                    return;
-                }
-            }
-            let tag = store_writer(w);
-            ACTIVE_SLOT.store(tag, Ordering::Release);
-        }
-        None => {
-            ACTIVE_SLOT.store(0xFF, Ordering::Release);
-        }
-    }
-}
-
-/// Store a writer in the next free slot and return its tag.
-fn store_writer(w: &'static dyn LogWriter) -> u8 {
-    // We use the high bit as an "in use" marker and the low 7 bits of
-    // the writer's address as a (lossy) tag. A collision (two writers
-    // with the same low 7 bits) will simply overwrite — acceptable for
-    // an embedded target that installs at most a handful of writers.
-    let raw = w as *const dyn LogWriter as *const () as usize;
-    let tag = ((raw & 0x7F) as u8) | 0x80;
-    for slot in WRITERS.iter() {
-        if slot.load(Ordering::Acquire) == 0 {
-            slot.store(tag, Ordering::Release);
-            return tag;
-        }
-    }
-    // No slot available — degrade to no-writer rather than panic.
-    0xFF
+    *WRITER.lock() = writer;
 }
 
 /// Read the currently installed writer, if any.
 fn current_writer() -> Option<&'static dyn LogWriter> {
-    let tag = ACTIVE_SLOT.load(Ordering::Acquire);
-    if tag == 0xFF {
-        return None;
-    }
-    // We cannot reconstruct the vtable from a tag without storing the
-    // full `*const dyn LogWriter` somewhere. The only writer that
-    // round-trips safely through this scheme is the well-known
-    // semihosting writer (whose address is fixed at link time).
-    #[cfg(feature = "semihosting")]
-    {
-        if tag == semihosting::SEMIHOSTING_TAG {
-            return Some(&semihosting::SEMIHOSTING_INSTANCE);
-        }
-    }
-    let _ = tag;
-    None
+    *WRITER.lock()
 }
 
 /// Set the global log level.

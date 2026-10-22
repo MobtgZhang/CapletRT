@@ -39,9 +39,8 @@ impl LogWriter for SemihostingWriter {
                     Err(_) => return Ok(()),
                 };
                 use core::fmt::Write as _;
-                let _ = stdout.write_str(
-                    core::str::from_utf8(bytes).unwrap_or("<non-utf8 log line>"),
-                );
+                let _ =
+                    stdout.write_str(core::str::from_utf8(bytes).unwrap_or("<non-utf8 log line>"));
                 Ok(())
             },
             level,

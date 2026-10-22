@@ -8,42 +8,38 @@
 //! Pair it with [`crate::install_writer`] at boot:
 //!
 //! ```ignore
-//! static UART: Mutex<MyUart> = Mutex::new(MyUart::new());
-//! caplet_log::install_writer(Some(&caplet_log::uart::UartWriter::new(&UART)));
+//! static UART: caplet_sync::SpinLock<MyUart> =
+//!     caplet_sync::SpinLock::new(MyUart::new());
+//! static WRITER: caplet_log::uart::UartWriter<MyUart> =
+//!     caplet_log::uart::UartWriter::new(&UART);
+//! caplet_log::install_writer(Some(&WRITER));
 //! ```
 
 use crate::level::Level;
 use crate::writer::{render_line, LogError, LogWriter};
 use caplet_hal::uart::Uart;
-use core::fmt::Write as _;
+use caplet_sync::SpinLock;
 
 /// [`LogWriter`] that forwards every line to a [`Uart`].
-pub struct UartWriter<U: Uart> {
-    uart: *const U,
+pub struct UartWriter<U: Uart + 'static> {
+    uart: &'static SpinLock<U>,
 }
 
-// SAFETY: the wrapped `Uart` is expected to be a `'static` instance
-// protected by a Mutex (typically). We only ever call `&self`
-// methods through the trait.
-unsafe impl<U: Uart + Send + Sync> Send for UartWriter<U> {}
-unsafe impl<U: Uart + Send + Sync> Sync for UartWriter<U> {}
-
-impl<U: Uart> UartWriter<U> {
-    /// Create a new writer wrapping the given UART. The pointer must
-    /// outlive the program (i.e. the underlying UART is a `'static`).
-    pub fn new(uart: &'static U) -> Self {
-        Self { uart: uart as *const U }
+impl<U: Uart + 'static> UartWriter<U> {
+    /// Create a new writer wrapping a permanently-installed, lock-protected
+    /// UART.  The lock provides the interior mutability required by the
+    /// `Uart` trait's `&mut self` methods.
+    pub const fn new(uart: &'static SpinLock<U>) -> Self {
+        Self { uart }
     }
 }
 
-impl<U: Uart> LogWriter for UartWriter<U>
+impl<U: Uart + Send> LogWriter for UartWriter<U>
 where
     U::Error: From<()>,
 {
     fn write(&self, level: Level, tag: &str, msg: &str) -> Result<(), LogError> {
-        // SAFETY: see the `Send`/`Sync` impls — caller guarantees
-        // the UART is a `'static` and concurrency-safe.
-        let uart = unsafe { &*self.uart };
+        let mut uart = self.uart.lock();
         render_line(
             &mut |bytes| {
                 let s = core::str::from_utf8(bytes).unwrap_or("<non-utf8 log>");
@@ -58,7 +54,7 @@ where
     }
 
     fn flush(&self) -> Result<(), LogError> {
-        let uart = unsafe { &*self.uart };
+        let mut uart = self.uart.lock();
         let _ = uart.flush();
         Ok(())
     }
