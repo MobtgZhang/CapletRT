@@ -10,8 +10,8 @@
 //! compare-exchange spin lock because no other CPU is waiting.
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU32, Ordering};
 use core::ops::{Deref, DerefMut};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Ticket lock: each waiter takes a number and waits its turn.
 pub struct TicketLock<T: ?Sized> {
@@ -121,7 +121,6 @@ impl<'a, T: ?Sized> Drop for TicketGuard<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec::Vec;
 
     #[test]
     fn single_thread_lock_unlock() {

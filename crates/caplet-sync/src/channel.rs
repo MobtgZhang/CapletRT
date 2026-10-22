@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Async channel (multiple producer, single consumer)
 pub struct Channel<T> {
-    inner: Arc<ChannelInner<T>>,
+    _marker: core::marker::PhantomData<T>,
 }
 
 /// Inner state of a channel
@@ -29,9 +29,7 @@ impl<T> Channel<T> {
         let sender = Sender {
             inner: Arc::clone(&channel),
         };
-        let receiver = Receiver {
-            inner: channel,
-        };
+        let receiver = Receiver { inner: channel };
         (sender, receiver)
     }
 

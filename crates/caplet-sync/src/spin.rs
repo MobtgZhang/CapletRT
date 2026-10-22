@@ -1,8 +1,8 @@
 //! Spin lock implementation
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
 use core::ops::{Deref, DerefMut};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// A simple spin lock
 ///
@@ -25,7 +25,11 @@ impl<T> SpinLock<T> {
 
     /// Try to acquire the lock without blocking
     pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
-        if self.locked.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+        if self
+            .locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
             Some(SpinLockGuard { lock: self })
         } else {
             None

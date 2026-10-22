@@ -11,19 +11,31 @@
 //! ## Usage
 //!
 //! ```rust
-//! let event = Event::new();
-//! // Task A: wait for flag 1 or 2
-//! event.wait_any(1 | 2);
+//! use caplet_sync::Event;
 //!
-//! // Task B: set flags
-//! event.set(1);
+//! let event = Event::new();
+//! // Task B: set flags for 1 and 2.
+//! event.set(1 | 2);
+//! // Task A: wait for flag 1 or 2; matched flags are consumed.
+//! let matched = event.wait_any(1 | 2);
+//! assert_eq!(matched, 1 | 2);
 //! ```
+//!
+//! Note that `wait_*` spin until the flags appear, so a flag must be
+//! set before (or concurrently with) the wait. Use [`Event::try_wait`]
+//! when you want a non-blocking poll.
 
 use crate::spin::SpinLock;
 
 /// Event flags for task synchronization
 pub struct Event {
     inner: SpinLock<EventInner>,
+}
+
+impl Default for Event {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -70,31 +82,37 @@ impl Event {
 
     /// Wait for all specified flags to be set
     pub fn wait_all(&self, flags: u32) {
+        if flags == 0 {
+            return;
+        }
+        self.inner.lock().waiters += 1;
         loop {
-            {
-                let mut inner = self.inner.lock();
-                if (inner.flags & flags) == flags {
-                    inner.flags &= !flags; // Clear the matched flags
-                    return;
-                }
-                inner.waiters += 1;
+            let mut inner = self.inner.lock();
+            if (inner.flags & flags) == flags {
+                inner.flags &= !flags; // Clear the matched flags
+                inner.waiters = inner.waiters.saturating_sub(1);
+                return;
             }
+            drop(inner);
             core::hint::spin_loop();
         }
     }
 
     /// Wait for any of the specified flags to be set
     pub fn wait_any(&self, flags: u32) -> u32 {
+        if flags == 0 {
+            return 0;
+        }
+        self.inner.lock().waiters += 1;
         loop {
-            {
-                let mut inner = self.inner.lock();
-                let matched = inner.flags & flags;
-                if matched != 0 {
-                    inner.flags &= !matched;
-                    return matched;
-                }
-                inner.waiters += 1;
+            let mut inner = self.inner.lock();
+            let matched = inner.flags & flags;
+            if matched != 0 {
+                inner.flags &= !matched;
+                inner.waiters = inner.waiters.saturating_sub(1);
+                return matched;
             }
+            drop(inner);
             core::hint::spin_loop();
         }
     }
@@ -124,3 +142,32 @@ impl Event {
 
 unsafe impl Send for Event {}
 unsafe impl Sync for Event {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_flags_do_not_block() {
+        let event = Event::new();
+        event.wait_all(0);
+        assert_eq!(event.wait_any(0), 0);
+        assert_eq!(event.waiter_count(), 0);
+    }
+
+    #[test]
+    fn wait_any_consumes_flags_and_releases_waiter() {
+        let event = Event::with_flags(0b1010);
+        assert_eq!(event.wait_any(0b0110), 0b0010);
+        assert_eq!(event.flags(), 0b1000);
+        assert_eq!(event.waiter_count(), 0);
+    }
+
+    #[test]
+    fn wait_all_clears_exactly_the_requested_flags() {
+        let event = Event::with_flags(0b1111);
+        event.wait_all(0b0101);
+        assert_eq!(event.flags(), 0b1010);
+        assert_eq!(event.waiter_count(), 0);
+    }
+}

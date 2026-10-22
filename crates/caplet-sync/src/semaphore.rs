@@ -20,11 +20,16 @@
 //! ## Usage
 //!
 //! ```rust
+//! use caplet_sync::Semaphore;
+//!
 //! let sem = Semaphore::new(1);  // Binary semaphore (like mutex)
-//! if sem.acquire() {
-//!     // Critical section
-//!     sem.release();
-//! }
+//! assert!(sem.acquire());
+//! // Critical section
+//! // The count is exhausted, so a non-blocking acquire fails.
+//! assert!(!sem.try_acquire());
+//! sem.release();
+//! // Released, so it can be taken again.
+//! assert!(sem.try_acquire());
 //! ```
 
 use crate::spin::SpinLock;

@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// A bounded synchronous channel
 pub struct SyncChannel<T> {
-    inner: Arc<SyncChannelInner<T>>,
+    _marker: core::marker::PhantomData<T>,
 }
 
 struct SyncChannelInner<T> {
@@ -19,8 +19,11 @@ struct SyncChannelInner<T> {
 }
 
 impl<T> SyncChannel<T> {
-    /// Create a new sync channel with the given capacity
-    pub fn new(capacity: usize) -> (SyncSender<T>, SyncReceiver<T>) {
+    /// Create a new sync channel with the given capacity.
+    ///
+    /// This is intentionally named `bounded` (rather than `new`) because it
+    /// returns the two connected endpoints instead of a `SyncChannel` value.
+    pub fn bounded(capacity: usize) -> (SyncSender<T>, SyncReceiver<T>) {
         let channel = Arc::new(SyncChannelInner {
             queue: SpinLock::new(VecDeque::with_capacity(capacity)),
             capacity,
@@ -30,7 +33,9 @@ impl<T> SyncChannel<T> {
         });
 
         (
-            SyncSender { inner: Arc::clone(&channel) },
+            SyncSender {
+                inner: Arc::clone(&channel),
+            },
             SyncReceiver { inner: channel },
         )
     }
@@ -76,7 +81,7 @@ pub enum TryRecvError {
 
 /// Create a new sync channel
 pub fn sync_channel<T>(capacity: usize) -> (SyncSender<T>, SyncReceiver<T>) {
-    SyncChannel::new(capacity)
+    SyncChannel::bounded(capacity)
 }
 
 impl<T> SyncSender<T> {
