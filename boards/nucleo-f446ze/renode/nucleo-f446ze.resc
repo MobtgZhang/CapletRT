@@ -1,0 +1,8 @@
+# Renode boot script for the physical-board mirror of Nucleo-F446ZE.
+mach create "nucleo-f446ze"
+machine LoadPlatformDescription @REPL@
+sysbus LoadELF @ELF@
+sysbus.cpu.semihosting.uart CreateFileBackend @OUT@
+start
+sleep 3
+quit

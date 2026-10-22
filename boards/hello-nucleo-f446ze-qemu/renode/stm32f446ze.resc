@@ -1,0 +1,8 @@
+# Renode boot script for hello-nucleo-f446ze-qemu.
+mach create "stm32f446ze"
+machine LoadPlatformDescription @REPL@
+sysbus LoadELF @ELF@
+sysbus.cpu.semihosting.uart CreateFileBackend @OUT@
+start
+sleep 3
+quit

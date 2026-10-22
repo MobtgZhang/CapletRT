@@ -19,19 +19,13 @@ unsafe impl critical_section::Impl for SingleCoreCriticalSection {
             out(reg) primask,
             options(pure, nomem, preserves_flags)
         );
-        core::arch::asm!(
-            "cpsid i",
-            options(nomem, preserves_flags)
-        );
+        core::arch::asm!("cpsid i", options(nomem, preserves_flags));
         primask
     }
 
     unsafe fn release(restore: critical_section::RawRestoreState) {
         if restore & 1 == 0 {
-            core::arch::asm!(
-                "cpsie i",
-                options(nomem, preserves_flags)
-            );
+            core::arch::asm!("cpsie i", options(nomem, preserves_flags));
         }
     }
 }

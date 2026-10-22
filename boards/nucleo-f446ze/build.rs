@@ -1,23 +1,20 @@
-use std::env;
-use std::fs::File;
-use std::io::Write;
-use std::path::Path;
+﻿use std::path::PathBuf;
 
 fn main() {
-    let out_dir = env::var("OUT_DIR").unwrap();
-    let out = Path::new(&out_dir);
+    let project_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
-    // For cortex-m-rt's own link.x (it INCLUDEs memory.x from CWD).
-    File::create(out.join("memory.x"))
-        .unwrap()
-        .write_all(include_bytes!("memory.x"))
-        .unwrap();
+    // Copy our link.x to OUT_DIR so the linker can find it
+    let link_src = project_dir.join("link.x");
+    let link_out = out.join("link.x");
+    let _ = std::fs::copy(&link_src, &link_out);
 
-    // For cortex-m-rt to find memory.x through its OUT_DIR discovery.
+    // Expose OUT_DIR as a link search path
     println!("cargo:rustc-link-search={}", out.display());
 
-    // Tell rustc to use cortex-m-rt's link.x (which then includes memory.x).
+    // Tell the linker to use our custom link.x
     println!("cargo:rustc-link-arg=-Tlink.x");
 
-    println!("cargo:rerun-if-changed=memory.x");
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=link.x");
 }

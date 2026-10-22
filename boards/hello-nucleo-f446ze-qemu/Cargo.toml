@@ -1,0 +1,44 @@
+[package]
+name = "hello-nucleo-f446ze-qemu"
+description = "Nucleo-F446ZE board crate for CapletRT (STM32F446ZE)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+cortex-m = { workspace = true }
+cortex-m-rt = { workspace = true }
+cortex-m-semihosting = { workspace = true }
+caplet-hal = { path = "../../crates/caplet-hal" }
+caplet-hal-stm32f4 = { path = "../../crates/caplet-hal-stm32f4" }
+caplet-cortex-m = { path = "../../ports/cortex-m" }
+caplet-kernel = { path = "../../crates/caplet-kernel" }
+caplet-log = { path = "../../crates/caplet-log", features = ["semihosting"] }
+caplet-macros = { path = "../../crates/caplet-macros" }
+caplet-macros-exports = { path = "../../crates/caplet-macros-exports", features = ["cortex-m"] }
+caplet = { path = "../../crates/caplet", features = ["cortex-m"] }
+caplet-async = { path = "../../crates/caplet-async" }
+caplet-sync = { path = "../../crates/caplet-sync" }
+embedded-alloc = "0.5"
+
+[target.'cfg(target_os = "none")'.dependencies]
+critical-section = { version = "1.2", features = ["restore-state-u32"] }
+
+[[bin]]
+name = "hello-nucleo-f446ze-qemu"
+path = "src/main.rs"
+required-features = ["target-none"]
+test = false
+
+[features]
+default = []
+# See hello-qemu-cm4 for the rationale.
+target-none = []
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

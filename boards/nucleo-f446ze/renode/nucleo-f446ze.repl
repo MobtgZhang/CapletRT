@@ -1,0 +1,43 @@
+// Minimal, fully offline STM32F446ZE (Nucleo-F446ZE) platform.
+//
+// This is the physical-board mirror of
+// boards/hello-nucleo-f446ze-qemu/renode/stm32f446ze.repl.  It avoids
+// the stock Renode STM32F4 description because that description calls
+// ApplySVD on a remote URL, which breaks air-gapped simulation.
+
+flash: Memory.MappedMemory @ sysbus 0x08000000
+    size: 0x00080000
+
+sram: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x00020000
+
+sramAlias: Memory.MappedMemory @ sysbus 0x00000000
+    size: 0x00020000
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    priorityMask: 0xF0
+    systickFrequency: 16000000
+    IRQ -> cpu@0
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m4"
+    nvic: nvic
+
+rtc: Timers.STM32F4_RTC @ sysbus 0x40002800
+
+rcc: Miscellaneous.STM32F4_RCC @ sysbus 0x40023800
+    rtcPeripheral: rtc
+
+gpioPortB: GPIOPort.STM32_GPIOPort @ sysbus <0x40020400, +0x400>
+    modeResetValue: 0x00000280
+    outputSpeedResetValue: 0x000000C0
+    pullUpPullDownResetValue: 0x00000100
+    numberOfAFs: 16
+
+UserLED: Miscellaneous.LED @ gpioPortB 0
+
+gpioPortB:
+    0 -> UserLED@0
+
+semihosting: CPU.SemihostingHandler @ cpu
+uart: UART.SemihostingUart @ semihosting
