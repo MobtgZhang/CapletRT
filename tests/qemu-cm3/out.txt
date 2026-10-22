@@ -1,0 +1,1 @@
+tests/qemu-cm3/run.sh: line 20: /c/Program Files/qemu/qemu-system-arm.exe: No such file or directory
